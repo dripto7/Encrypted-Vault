@@ -1,0 +1,14 @@
+build/
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.symvers
+*.order
+.tmp_versions/
+driver/.*.cmd
+driver/modules.order
+driver/Module.symvers
+*.vault
+docs/screenshots/*.png

@@ -1,0 +1,15 @@
+# udev rules for the kvault character device.
+#
+# The control node is root-only on purpose: every caller still goes through
+# the kernel's own RBAC check, but there is no reason to let an unprivileged
+# process hold a descriptor it can never use. The simulator's children get in
+# because the group below is granted read/write.
+#
+# The audit node is group-readable by kvaudit so an auditor can follow the log
+# without being able to issue commands - the two minors exist precisely so the
+# file permissions can differ.
+#
+# Install:  sudo cp scripts/99-kvault.rules /etc/udev/rules.d/
+#           sudo udevadm control --reload && sudo udevadm trigger
+KERNEL=="kvault",       SUBSYSTEM=="kvault", MODE="0660", GROUP="kvault"
+KERNEL=="kvault_audit", SUBSYSTEM=="kvault", MODE="0440", GROUP="kvaudit"
