@@ -56,7 +56,17 @@ $(BUILD)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-load: driver
+# The udev rule is installed before the module is loaded, because the rule is
+# what gives the two device nodes their different groups - without it they are
+# root-only 0600 and nothing the simulator does can reach them.
+# The groups themselves come from kvsetup, so that runs first.
+load: driver user
+	@if ! getent group kvault >/dev/null; then \
+		echo "creating the kvault/kvaudit groups and test users"; \
+		sudo $(BIN)/kvsetup >/dev/null; \
+	fi
+	sudo cp scripts/99-kvault.rules /etc/udev/rules.d/
+	sudo udevadm control --reload
 	sudo insmod driver/kvault.ko
 	@sudo udevadm settle || true
 	@ls -l /dev/kvault /dev/kvault_audit

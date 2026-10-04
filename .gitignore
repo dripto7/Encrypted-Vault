@@ -11,4 +11,6 @@ driver/.*.cmd
 driver/modules.order
 driver/Module.symvers
 *.vault
-docs/screenshots/*.png
+# docs/screenshots/*.png is deliberately NOT ignored: the demo images are a
+# deliverable and the README embeds one. Build output is ignored above; these
+# are not build output.
