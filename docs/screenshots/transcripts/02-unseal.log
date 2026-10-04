@@ -1,0 +1,30 @@
+
+### unseal against the vault file on disk
+$ vaultctl unseal /tmp/kvdemo.vault
+using the KDF parameters from /tmp/kvdemo.vault (2 secrets, 200000 iterations)
+unsealed (2 secrets, auto-lock in 300s)
+
+$ vaultctl seal
+sealed; key wiped from kernel memory
+
+
+### now a wrong passphrase, three times
+$ vaultctl unseal /tmp/kvdemo.vault        # attempt 1
+vaultctl: KVAULT_UNSEAL: Permission denied
+state: SEALED failed_attempts: 1/3 
+$ vaultctl unseal /tmp/kvdemo.vault        # attempt 2
+vaultctl: KVAULT_UNSEAL: Permission denied
+state: SEALED failed_attempts: 2/3 
+$ vaultctl unseal /tmp/kvdemo.vault        # attempt 3
+vaultctl: KVAULT_UNSEAL: Permission denied
+state: LOCKED_OUT failed_attempts: 3/3 
+
+
+### and now the CORRECT passphrase is refused too
+$ vaultctl unseal /tmp/kvdemo.vault
+vaultctl: KVAULT_UNSEAL: Resource temporarily unavailable
+
+$ sleep 6     # lockout_secs=5
+$ vaultctl unseal /tmp/kvdemo.vault
+using the KDF parameters from /tmp/kvdemo.vault (2 secrets, 200000 iterations)
+unsealed (2 secrets, auto-lock in 300s)

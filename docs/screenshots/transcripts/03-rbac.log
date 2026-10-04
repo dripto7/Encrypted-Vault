@@ -1,0 +1,23 @@
+
+### the secrets came back from the file; now bind the roles
+$ vaultctl list
+tls_key
+db_password
+
+$ vaultctl policy configs/policy.conf
+5/5 bindings applied
+
+$ runuser -u kv_alice -- vaultctl get db_password     # before the grant
+vaultctl: KVAULT_GET: Permission denied
+
+$ vaultctl grant db_password developer r
+granted r on db_password to developer
+
+$ runuser -u kv_alice -- vaultctl get db_password     # after the grant
+s3cr3t-db-pa55word
+
+$ runuser -u kv_eve -- vaultctl get db_password       # eve is a guest
+vaultctl: KVAULT_GET: Permission denied
+
+$ runuser -u kv_carol -- vaultctl get db_password     # auditor: refused at open()
+vaultctl: open /dev/kvault: Permission denied

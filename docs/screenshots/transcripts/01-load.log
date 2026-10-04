@@ -1,0 +1,13 @@
+
+### insmod kvault.ko
+$ ls -l /dev/kvault*
+crw-rw---- 1 root kvault  235, 0 Oct  4 12:16 /dev/kvault
+cr--r----- 1 root kvaudit 235, 1 Oct  4 12:16 /dev/kvault_audit
+
+$ cat /proc/kvault/status
+state:            SEALED
+secrets:          0
+key_loaded:       no
+failed_attempts:  0/3
+autolock_secs:    300
+abi_version:      1

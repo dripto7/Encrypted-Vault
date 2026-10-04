@@ -21,6 +21,9 @@ output is in `verification-session.log`, `v05-session.log` and
 Kernel health after every run: no `WARNING`, `BUG`, lockdep or KASAN output;
 `rmmod` clean each time.
 
+Seven steps of the demo are captured in `screenshots/`, with the raw
+transcripts in `screenshots/transcripts/`.
+
 ## 6.2 How the suites are split
 
 Three tiers, because they need different things from the environment:

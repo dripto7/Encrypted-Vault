@@ -88,6 +88,21 @@ Full design, UML and the state machines are in [docs/](docs/):
 | [04-uml.md](docs/04-uml.md) | Class, sequence and state diagrams |
 | [05-progress.md](docs/05-progress.md) | Development log and review notes |
 | [06-test-report.md](docs/06-test-report.md) | 90 test cases, benchmarks, defects found |
+| [screenshots/](docs/screenshots/) | The seven-step demo, with the raw transcripts beside it |
+
+## Demo
+
+![Multi-user simulation](docs/screenshots/04-kvsim.png)
+
+Four principals, each in a forked child that dropped to its own UID. `kv_alice`
+and `kv_bob` hold the *same role* and get different answers, because the role
+is not the decision — the ACL is. `kv_eve` is refused four times by the kernel,
+and `kv_carol` is refused at `open()` by file permissions before the reference
+monitor is even consulted.
+
+The remaining six steps — load, lockout, grant/revoke, the live audit stream,
+the vault file in hex with a flipped byte rejected, and auto-lock — are in
+[docs/screenshots/](docs/screenshots/).
 
 ## Status
 
