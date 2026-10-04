@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include <grp.h>
 #include <pwd.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -43,15 +44,47 @@ uid_t lookupUid(const std::string &user)
 	return pw->pw_uid;
 }
 
-/* Drop to @uid with no way back: setresuid sets the saved-set-uid too, so the
- * child cannot restore root afterwards. Anything less would leave the child
- * able to re-acquire privilege and the simulation would prove nothing. */
-void dropTo(uid_t uid)
+/*
+ * Become @user completely, with no way back.
+ *
+ * The order matters and is the classic place to get this wrong:
+ *
+ *  1. initgroups() installs the user's supplementary groups. Without it the
+ *     child keeps root's groups, so a device node owned by group kvault would
+ *     still be openable for the wrong reason and the simulation would prove
+ *     nothing about that user's access.
+ *  2. setresgid() before setresuid(). Once the real UID is no longer 0 the
+ *     process has lost the privilege needed to change its groups, so a drop
+ *     done the other way round silently leaves the group IDs at root's.
+ *  3. setresuid() sets the saved-set-uid too, which is what makes the drop
+ *     irreversible; seteuid() alone would leave root in the saved slot for the
+ *     child to pick back up.
+ *
+ * The attempt to regain root afterwards is not paranoia for its own sake: it is
+ * the only way to be sure the drop actually took, and a simulation whose
+ * children are secretly still root measures nothing.
+ */
+void dropTo(const std::string &user, uid_t uid)
 {
+	const struct passwd *pw = ::getpwnam(user.c_str());
+	if (!pw) {
+		std::cerr << "kvsim: " << user << " vanished between lookup and fork\n";
+		std::exit(3);
+	}
+
+	if (::initgroups(user.c_str(), pw->pw_gid) != 0) {
+		std::perror("initgroups");
+		std::exit(3);
+	}
+	if (::setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) != 0) {
+		std::perror("setresgid");
+		std::exit(3);
+	}
 	if (::setresuid(uid, uid, uid) != 0) {
 		std::perror("setresuid");
 		std::exit(3);
 	}
+
 	if (::setresuid(0, 0, 0) == 0) {
 		std::cerr << "kvsim: privilege drop was reversible - aborting\n";
 		std::exit(3);
@@ -129,7 +162,7 @@ int main()
 
 		if (pid == 0) {
 			::close(pipefd[0]);
-			dropTo(u->uid());
+			dropTo(u->name(), u->uid());
 
 			const std::vector<StepResult> rows = u->run();
 			for (const StepResult &r : rows) {

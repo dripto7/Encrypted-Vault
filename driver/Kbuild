@@ -1,3 +1,4 @@
 obj-m += kvault.o
-kvault-y := kv_main.o kv_store.o kv_crypto.o kv_acl.o kv_audit.o kv_proc.o
+kvault-y := kv_main.o kv_store.o kv_crypto.o kv_acl.o kv_audit.o kv_proc.o \
+	     kv_file.o
 ccflags-y := -I$(src)/../include -Wall

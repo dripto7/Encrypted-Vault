@@ -134,6 +134,11 @@ __poll_t kv_audit_poll(struct file *filp, struct kv_session *sess,
 u64  kv_audit_seq(void);
 u64  kv_audit_dropped_count(void);
 
+/* kv_file.c */
+u32  kv_export_size(void);
+int  kv_export(u8 *buf, u32 cap, u32 *out_len);
+int  kv_import(const u8 *buf, u32 len);
+
 /* kv_proc.c */
 int  kv_proc_init(void);
 void kv_proc_exit(void);

@@ -434,6 +434,358 @@ out_free:
 	return ret;
 }
 
+static int kv_ioctl_delete(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_name_arg arg;
+	struct kv_secret *s;
+	int ret;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+	ret = kv_check_name(arg.name);
+	if (ret)
+		return ret;
+
+	mutex_lock(&kv_vault.lock);
+	if (kv_vault.state != KV_STATE_UNSEALED) {
+		ret = -EPERM;
+		goto out;
+	}
+
+	s = kv_store_find(arg.name);
+	if (!s) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (!kv_acl_check(s, sess->uid, KV_PERM_DELETE)) {
+		ret = -EACCES;
+		goto out;
+	}
+
+	kv_store_remove(s);
+	kv_touch_locked();
+	ret = 0;
+
+out:
+	kv_audit_log(sess->uid, sess->pid, KV_OP_DELETE, arg.name,
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	mutex_unlock(&kv_vault.lock);
+	return ret;
+}
+
+/*
+ * Re-encrypt a secret under a fresh nonce without changing its plaintext.
+ *
+ * This is what you do after a suspected exposure of the ciphertext, or on a
+ * schedule, to limit how much material is encrypted under any one nonce. The
+ * plaintext makes a round trip through a kernel buffer that is wiped before the
+ * function returns, so a failure part-way leaves no decrypted copy behind.
+ */
+static int kv_ioctl_rotate(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_name_arg arg;
+	struct kv_secret *s;
+	u8 *pt = NULL, *ct = NULL;
+	u8 nonce[KV_NONCE_LEN];
+	u8 tag[KV_TAG_LEN];
+	int ret;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+	ret = kv_check_name(arg.name);
+	if (ret)
+		return ret;
+
+	mutex_lock(&kv_vault.lock);
+	if (kv_vault.state != KV_STATE_UNSEALED) {
+		ret = -EPERM;
+		goto out;
+	}
+
+	s = kv_store_find(arg.name);
+	if (!s) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (!kv_acl_check(s, sess->uid, KV_PERM_WRITE)) {
+		ret = -EACCES;
+		goto out;
+	}
+
+	pt = kzalloc(s->ct_len, GFP_KERNEL);
+	ct = kzalloc(s->ct_len, GFP_KERNEL);
+	if (!pt || !ct) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ret = kv_crypto_decrypt(kv_vault.key, s->nonce,
+				(const u8 *)s->name, KV_NAME_MAX,
+				s->ct, s->ct_len, s->tag, pt);
+	if (ret)
+		goto out;
+
+	get_random_bytes(nonce, sizeof(nonce));
+	ret = kv_crypto_encrypt(kv_vault.key, nonce,
+				(const u8 *)s->name, KV_NAME_MAX,
+				pt, s->ct_len, ct, tag);
+	if (ret)
+		goto out;
+
+	kfree_sensitive(s->ct);
+	s->ct = ct;
+	ct = NULL;
+	memcpy(s->nonce, nonce, sizeof(s->nonce));
+	memcpy(s->tag, tag, sizeof(s->tag));
+	s->version++;
+	s->modified_ms = kv_now_ms();
+	kv_touch_locked();
+
+out:
+	kv_audit_log(sess->uid, sess->pid, KV_OP_ROTATE, arg.name,
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	mutex_unlock(&kv_vault.lock);
+	kfree_sensitive(pt);
+	kfree_sensitive(ct);
+	return ret;
+}
+
+/*
+ * LIST returns only the names the caller may read.
+ *
+ * Omitting the rest rather than reporting them as denied matters: a list that
+ * said "7 secrets, you may read 1" would leak the shape of the namespace, and
+ * secret names are informative on their own - "stripe_live_key" tells an
+ * attacker what the system does and what is worth attacking.
+ */
+static int kv_ioctl_list(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_list_arg *arg;
+	struct kv_secret *s;
+	int i, ret = 0;
+
+	arg = kzalloc(sizeof(*arg), GFP_KERNEL);
+	if (!arg)
+		return -ENOMEM;
+
+	mutex_lock(&kv_vault.lock);
+	if (kv_vault.state != KV_STATE_UNSEALED) {
+		ret = -EPERM;
+		goto out;
+	}
+
+	for (i = 0; i < (1 << KV_HASH_BITS) && arg->count < KV_LIST_MAX; i++) {
+		hlist_for_each_entry(s, &kv_vault.secrets[i], node) {
+			if (arg->count >= KV_LIST_MAX)
+				break;
+			if (!kv_acl_check(s, sess->uid, KV_PERM_READ))
+				continue;
+			strscpy(arg->names[arg->count], s->name, KV_NAME_MAX);
+			arg->count++;
+		}
+	}
+	kv_touch_locked();
+
+out:
+	kv_audit_log(sess->uid, sess->pid, KV_OP_LIST, "",
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	mutex_unlock(&kv_vault.lock);
+
+	if (!ret && copy_to_user(uarg, arg, sizeof(*arg)))
+		ret = -EFAULT;
+	kfree(arg);
+	return ret;
+}
+
+/* GRANT and REVOKE share everything but the final mutation. */
+static int kv_ioctl_grant(struct kv_session *sess, void __user *uarg,
+			  bool granting)
+{
+	struct kv_grant_arg arg;
+	struct kv_secret *s;
+	int ret;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+	ret = kv_check_name(arg.name);
+	if (ret)
+		return ret;
+
+	mutex_lock(&kv_vault.lock);
+	if (kv_vault.state != KV_STATE_UNSEALED) {
+		ret = -EPERM;
+		goto out;
+	}
+
+	s = kv_store_find(arg.name);
+	if (!s) {
+		ret = -ENOENT;
+		goto out;
+	}
+	/* Delegation is itself a permission: holding GRANT on a secret is what
+	 * lets a principal widen access to it, and the owner and admin hold it
+	 * implicitly. Without this, any reader could share what they can read. */
+	if (!kv_acl_check(s, sess->uid, KV_PERM_GRANT)) {
+		ret = -EACCES;
+		goto out;
+	}
+
+	ret = granting ? kv_acl_set(s, arg.subject_kind, arg.subject_id,
+				    arg.perms)
+		       : kv_acl_revoke(s, arg.subject_kind, arg.subject_id);
+	if (!ret) {
+		s->modified_ms = kv_now_ms();
+		kv_touch_locked();
+	}
+
+out:
+	kv_audit_log(sess->uid, sess->pid,
+		     granting ? KV_OP_GRANT : KV_OP_REVOKE, arg.name,
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	mutex_unlock(&kv_vault.lock);
+	return ret;
+}
+
+/*
+ * Bind a UID to a role. Administrative, and deliberately not something a
+ * principal can do to itself: a developer who could set their own role would
+ * make the whole policy advisory.
+ */
+static int kv_ioctl_set_role(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_setrole_arg arg;
+	int ret;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+
+	if (!kv_is_admin(sess->uid)) {
+		kv_audit_log(sess->uid, sess->pid, KV_OP_SET_ROLE, "",
+			     KV_RESULT_DENY, -EACCES);
+		return -EACCES;
+	}
+
+	mutex_lock(&kv_vault.lock);
+	ret = kv_role_bind(arg.uid, arg.role_id);
+	kv_audit_log(sess->uid, sess->pid, KV_OP_SET_ROLE, "",
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	mutex_unlock(&kv_vault.lock);
+	return ret;
+}
+
+/*
+ * EXPORT / IMPORT.
+ *
+ * The argument is a descriptor carrying a user-space address rather than an
+ * inline buffer, because an ioctl command number can only describe a struct of
+ * up to 16383 bytes and a sealed vault is larger than that. So the blob makes
+ * two trips: the descriptor through the ioctl argument, the payload through the
+ * pointer it names. That pointer is untrusted - it is validated by
+ * copy_to_user/copy_from_user, which is the only thing that may dereference it.
+ *
+ * Both are administrative. Export in particular hands out every ciphertext in
+ * the vault, which is exactly what an attacker needs to mount an offline attack
+ * on the passphrase at their leisure, so it is not something a reader should be
+ * able to do just because they can read one secret.
+ */
+static int kv_ioctl_export(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_blob_arg arg;
+	u8 *blob = NULL;
+	u32 len = 0;
+	int ret;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+
+	if (!kv_is_admin(sess->uid)) {
+		kv_audit_log(sess->uid, sess->pid, KV_OP_EXPORT, "",
+			     KV_RESULT_DENY, -EACCES);
+		return -EACCES;
+	}
+	if (arg.len > KV_BLOB_MAX)
+		return -EINVAL;
+
+	mutex_lock(&kv_vault.lock);
+	if (kv_vault.state != KV_STATE_UNSEALED) {
+		ret = -EPERM;
+		goto out;
+	}
+
+	blob = kvzalloc(KV_BLOB_MAX, GFP_KERNEL);
+	if (!blob) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ret = kv_export(blob, arg.len, &len);
+
+out:
+	kv_audit_log(sess->uid, sess->pid, KV_OP_EXPORT, "",
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	mutex_unlock(&kv_vault.lock);
+
+	if (!ret) {
+		if (copy_to_user((void __user *)(uintptr_t)arg.buf, blob, len))
+			ret = -EFAULT;
+		else {
+			arg.len = len;
+			if (copy_to_user(uarg, &arg, sizeof(arg)))
+				ret = -EFAULT;
+		}
+	} else if (ret == -ENOSPC) {
+		/* Tell the caller how much room it needed. */
+		arg.len = len;
+		if (copy_to_user(uarg, &arg, sizeof(arg)))
+			ret = -EFAULT;
+	}
+
+	kvfree(blob);
+	return ret;
+}
+
+static int kv_ioctl_import(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_blob_arg arg;
+	u8 *blob;
+	int ret;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+
+	if (!kv_is_admin(sess->uid)) {
+		kv_audit_log(sess->uid, sess->pid, KV_OP_IMPORT, "",
+			     KV_RESULT_DENY, -EACCES);
+		return -EACCES;
+	}
+	if (arg.len == 0 || arg.len > KV_BLOB_MAX)
+		return -EINVAL;
+
+	blob = kvzalloc(arg.len, GFP_KERNEL);
+	if (!blob)
+		return -ENOMEM;
+
+	if (copy_from_user(blob, (const void __user *)(uintptr_t)arg.buf,
+			   arg.len)) {
+		kvfree(blob);
+		return -EFAULT;
+	}
+
+	mutex_lock(&kv_vault.lock);
+	if (kv_vault.state != KV_STATE_UNSEALED)
+		ret = -EPERM;
+	else
+		ret = kv_import(blob, arg.len);
+	kv_audit_log(sess->uid, sess->pid, KV_OP_IMPORT, "",
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	if (!ret)
+		kv_touch_locked();
+	mutex_unlock(&kv_vault.lock);
+
+	kvfree(blob);
+	return ret;
+}
+
 /* STATUS is deliberately readable by anyone: it reports lifecycle state and
  * counters only, never names, plaintext or key material. */
 static int kv_ioctl_status(struct kv_session *sess, void __user *uarg)
@@ -496,15 +848,28 @@ static long kv_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		ret = kv_ioctl_get(sess, uarg);
 		break;
 	case KVAULT_DELETE:
+		ret = kv_ioctl_delete(sess, uarg);
+		break;
 	case KVAULT_LIST:
+		ret = kv_ioctl_list(sess, uarg);
+		break;
 	case KVAULT_ROTATE:
+		ret = kv_ioctl_rotate(sess, uarg);
+		break;
 	case KVAULT_GRANT:
+		ret = kv_ioctl_grant(sess, uarg, true);
+		break;
 	case KVAULT_REVOKE:
+		ret = kv_ioctl_grant(sess, uarg, false);
+		break;
 	case KVAULT_SET_ROLE:
+		ret = kv_ioctl_set_role(sess, uarg);
+		break;
 	case KVAULT_EXPORT:
+		ret = kv_ioctl_export(sess, uarg);
+		break;
 	case KVAULT_IMPORT:
-		/* Implemented in the v0.4/v0.5 driver milestones. */
-		ret = -ENOSYS;
+		ret = kv_ioctl_import(sess, uarg);
 		break;
 	default:
 		ret = -ENOTTY;

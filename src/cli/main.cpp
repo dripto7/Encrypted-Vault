@@ -17,9 +17,12 @@
 #include <openssl/crypto.h>
 
 #include <poll.h>
+#include <pwd.h>
 #include <unistd.h>
 
 #include "client/Passphrase.hpp"
+#include "client/PolicyLoader.hpp"
+#include "client/SealedStore.hpp"
 #include "client/VaultClient.hpp"
 
 using namespace kvault;
@@ -33,15 +36,23 @@ int usage(const char *argv0)
 	    "\n"
 	    "  status                       show vault lifecycle state\n"
 	    "  watch                        stream the audit log (blocks)\n"
-	    "  unseal                       derive a key from a passphrase and unseal\n"
+	    "  unseal [vaultfile]           derive a key and unseal; with a file,\n"
+	    "                               take its KDF parameters and load it\n"
 	    "  seal                         wipe the key from kernel memory\n"
 	    "  put <name>                   store a secret read from stdin\n"
 	    "  get <name>                   print a secret to stdout\n"
 	    "  del <name>                   delete a secret\n"
 	    "  list                         list readable secret names\n"
 	    "  rotate <name>                re-encrypt under a fresh nonce\n"
-	    "  grant <name> <role> <perms>  grant permissions to a role\n"
-	    "  revoke <name> <role>         drop a role's ACL entry\n";
+	    "  grant <name> <subject> <perms>  grant permissions\n"
+	    "  revoke <name> <subject>      drop a subject's ACL entry\n"
+	    "  set-role <user|uid> <role>   bind a user to a role (admin)\n"
+	    "  policy <file>                apply a policy file (admin)\n"
+	    "  export <file>                write the sealed vault to disk\n"
+	    "  import <file>                reload a sealed vault\n"
+	    "\n"
+	    "  <subject> is a role name (admin, developer, auditor, guest)\n"
+	    "  or user:<name|uid>.  <perms> is any of r, w, d, g.\n";
 	return 2;
 }
 
@@ -65,24 +76,39 @@ int cmdStatus()
 }
 
 /*
- * Unseal.
+ * Unseal, optionally against a vault file.
  *
- * The salt and iteration count are the kernel's, not the CLI's: on an
- * initialized vault STATUS hands them back so the same passphrase derives the
- * same key, and only an uninitialized vault generates fresh ones. Keeping that
- * decision on the kernel side means two different user-space tools cannot
- * disagree about which salt belongs to this vault.
+ * The salt has to come from the same place the vault did, and that is the file
+ * header - not the kernel. A freshly loaded module knows no salt, so deriving
+ * from a newly generated one produces a key that cannot authenticate anything
+ * in an existing file. (That is exactly the bug this grew out of: unseal
+ * succeeded, import then failed with EACCES, and the vault looked corrupt when
+ * it was fine.)
+ *
+ * So: a vault file decides the KDF parameters when one exists, the kernel's
+ * recorded parameters decide when the vault is already unsealed-and-populated
+ * in memory, and only a genuinely fresh vault generates a new salt.
  */
-int cmdUnseal()
+int cmdUnseal(const std::string &vaultPath)
 {
 	VaultClient c;
 	const kv_status_arg st = c.status();
 
 	Salt salt{};
 	unsigned iterations;
+	bool importAfter = false;
 	std::string pass;
 
-	if (st.initialized) {
+	if (!vaultPath.empty() && SealedStore::exists(vaultPath)) {
+		const SealedStore::Header h = SealedStore::readHeader(vaultPath);
+		salt = h.salt;
+		iterations = h.iterations;
+		importAfter = true;
+		std::cout << "using the KDF parameters from " << vaultPath
+			  << " (" << h.entryCount << " secrets, "
+			  << iterations << " iterations)\n";
+		pass = Passphrase::read("Passphrase: ");
+	} else if (st.initialized) {
 		std::memcpy(salt.data(), st.salt, salt.size());
 		iterations = st.kdf_iterations;
 		pass = Passphrase::read("Passphrase: ");
@@ -110,6 +136,23 @@ int cmdUnseal()
 	OPENSSL_cleanse(pass.data(), pass.size());
 
 	c.unseal(key, salt, iterations);
+
+	if (importAfter) {
+		/* A wrong passphrase gets this far - the kernel had no key-check
+		 * value to reject it against - and fails here instead, when the
+		 * file's own KCV does not match. Report that as what it is. */
+		try {
+			c.importBlob(SealedStore::load(vaultPath));
+		} catch (const VaultError &e) {
+			if (e.errnoValue() == EACCES) {
+				c.seal();
+				std::cerr << "vaultctl: wrong passphrase for "
+					  << vaultPath << "\n";
+				return 1;
+			}
+			throw;
+		}
+	}
 
 	const kv_status_arg after = c.status();
 	std::cout << "unsealed (" << after.secret_count << " secrets, "
@@ -175,6 +218,121 @@ int cmdGet(const std::string &name)
 	return 0;
 }
 
+int cmdExport(const std::string &path)
+{
+	VaultClient c;
+	std::vector<std::uint8_t> blob = c.exportBlob();
+	SealedStore::save(path, blob);
+	std::cout << "exported " << blob.size() << " bytes of sealed vault to "
+		  << path << "\n";
+	return 0;
+}
+
+int cmdImport(const std::string &path)
+{
+	VaultClient c;
+	const std::vector<std::uint8_t> blob = SealedStore::load(path);
+	c.importBlob(blob);
+	std::cout << "imported " << blob.size() << " bytes; "
+		  << c.status().secret_count << " secrets now loaded\n";
+	return 0;
+}
+
+/* Resolves a subject written either as a role name or as user:<name|uid>. */
+bool parseSubject(const std::string &spec, std::uint32_t &kind,
+		  std::uint32_t &id)
+{
+	if (spec.rfind("user:", 0) == 0) {
+		const std::string who = spec.substr(5);
+		kind = KV_SUBJ_UID;
+		if (who.find_first_not_of("0123456789") == std::string::npos) {
+			id = static_cast<std::uint32_t>(std::stoul(who));
+			return true;
+		}
+		if (const struct passwd *pw = ::getpwnam(who.c_str())) {
+			id = pw->pw_uid;
+			return true;
+		}
+		std::cerr << "vaultctl: no such user '" << who << "'\n";
+		return false;
+	}
+
+	kind = KV_SUBJ_ROLE;
+	id = PolicyLoader::roleIdFromName(spec);
+	return true;
+}
+
+int cmdGrant(const std::string &name, const std::string &subject,
+	     const std::string &perms)
+{
+	std::uint32_t kind, id;
+	if (!parseSubject(subject, kind, id))
+		return 1;
+
+	VaultClient c;
+	c.grant(name, kind, id, PolicyLoader::permsFromString(perms));
+	std::cout << "granted " << perms << " on " << name << " to " << subject
+		  << "\n";
+	return 0;
+}
+
+int cmdRevoke(const std::string &name, const std::string &subject)
+{
+	std::uint32_t kind, id;
+	if (!parseSubject(subject, kind, id))
+		return 1;
+
+	VaultClient c;
+	c.revoke(name, kind, id);
+	std::cout << "revoked " << subject << "'s access to " << name << "\n";
+	return 0;
+}
+
+int cmdSetRole(const std::string &who, const std::string &role)
+{
+	std::uint32_t uid;
+	if (who.find_first_not_of("0123456789") == std::string::npos) {
+		uid = static_cast<std::uint32_t>(std::stoul(who));
+	} else if (const struct passwd *pw = ::getpwnam(who.c_str())) {
+		uid = pw->pw_uid;
+	} else {
+		std::cerr << "vaultctl: no such user '" << who << "'\n";
+		return 1;
+	}
+
+	VaultClient c;
+	c.setRole(uid, PolicyLoader::roleIdFromName(role));
+	std::cout << "uid " << uid << " is now " << role << "\n";
+	return 0;
+}
+
+/* Applies every binding in a policy file. One failure does not abort the rest:
+ * a vault with most of its policy applied and a clear report of what failed is
+ * more useful than one left in an unknown half-applied state. */
+int cmdPolicy(const std::string &path)
+{
+	const std::vector<PolicyLoader::Binding> bindings =
+	    PolicyLoader::parse(path);
+
+	VaultClient c;
+	int failures = 0;
+
+	for (const PolicyLoader::Binding &b : bindings) {
+		try {
+			c.setRole(b.uid, b.roleId);
+			std::cout << "  " << b.user << " (uid " << b.uid << ") -> "
+				  << VaultClient::roleName(b.roleId) << "\n";
+		} catch (const VaultError &e) {
+			std::cerr << "  " << b.user << ": " << e.what() << "\n";
+			++failures;
+		}
+	}
+
+	std::cout << bindings.size() - static_cast<std::size_t>(failures) << "/"
+		  << bindings.size() << " bindings applied\n";
+	return failures ? 1 : 0;
+}
+
 /* Blocks in poll() until the kernel wakes us, which is what makes the wait
  * queue in the driver visible in the demo: no polling loop, no sleep. */
 int cmdWatch()
@@ -218,17 +376,26 @@ int main(int argc, char **argv)
 		if (cmd == "watch")
 			return cmdWatch();
 		if (cmd == "unseal")
-			return cmdUnseal();
+			return cmdUnseal(argc >= 3 ? argv[2] : "");
 		if (cmd == "seal")
 			return cmdSeal();
 		if (cmd == "put" && argc == 3)
 			return cmdPut(argv[2]);
 		if (cmd == "get" && argc == 3)
 			return cmdGet(argv[2]);
+		if (cmd == "export" && argc == 3)
+			return cmdExport(argv[2]);
+		if (cmd == "import" && argc == 3)
+			return cmdImport(argv[2]);
+		if (cmd == "grant" && argc == 5)
+			return cmdGrant(argv[2], argv[3], argv[4]);
+		if (cmd == "revoke" && argc == 4)
+			return cmdRevoke(argv[2], argv[3]);
+		if (cmd == "set-role" && argc == 4)
+			return cmdSetRole(argv[2], argv[3]);
+		if (cmd == "policy" && argc == 3)
+			return cmdPolicy(argv[2]);
 
-		/* The remaining verbs reach the driver, which answers ENOSYS
-		 * until the v0.5 milestone. Letting them through means the
-		 * error the user sees is the kernel's, not a guess. */
 		{
 			VaultClient c;
 			if (cmd == "list") {

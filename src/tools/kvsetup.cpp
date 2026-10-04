@@ -16,6 +16,7 @@
  * holds the right locks, updates the shadow file and picks a free UID; doing
  * that by hand to avoid one fork would be a worse program.
  */
+#include <grp.h>
 #include <pwd.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -31,6 +32,29 @@ namespace {
 const std::array<const char *, 4> kUsers = {
     "kv_alice", "kv_bob", "kv_eve", "kv_carol"
 };
+
+/*
+ * Two groups, because the device has two minors with different audiences.
+ *
+ * kvault  - may open /dev/kvault and issue commands. Membership is not
+ *           authorisation: the kernel still decides every operation. It only
+ *           means "allowed to ask".
+ * kvaudit - may read /dev/kvault_audit and nothing else.
+ *
+ * kv_carol is deliberately in kvaudit only. An auditor who cannot even open
+ * the control device is a stronger statement than one who opens it and is
+ * refused, and it is the file-permission layer doing the work rather than the
+ * reference monitor - defence in depth, visible in the simulation output.
+ */
+struct GroupSpec {
+	const char *group;
+	std::array<const char *, 3> members;   /* nullptr-terminated */
+};
+
+const std::array<GroupSpec, 2> kGroups = {{
+    {"kvault",  {"kv_alice", "kv_bob", "kv_eve"}},
+    {"kvaudit", {"kv_carol", nullptr, nullptr}},
+}};
 
 /* A name that reaches execvp must not be able to turn into an option or a
  * second argument. Restricting to [a-z0-9_] and requiring a letter first is
@@ -50,9 +74,16 @@ bool validName(const std::string &name)
 	return true;
 }
 
-/* Runs useradd for @name. Returns the child's exit status, or -1 if the child
- * could not be started or did not exit normally. */
-int runUseradd(const std::string &name)
+/*
+ * Runs @prog with @args. Returns the child's exit status, or -1 if the child
+ * could not be started or did not exit normally.
+ *
+ * argv is built from a vector of std::string rather than assembled into one
+ * command line, because there is no shell here to re-split it: each element
+ * arrives at the program as exactly one argument, so a name containing a space
+ * cannot become two.
+ */
+int runTool(const std::string &prog, const std::vector<std::string> &args)
 {
 	const pid_t pid = ::fork();
 	if (pid < 0) {
@@ -61,17 +92,16 @@ int runUseradd(const std::string &name)
 	}
 
 	if (pid == 0) {
-		/* --system: these are service accounts, not login accounts.
-		 * nologin and no home directory because nobody should be able
-		 * to log in as a simulated principal. */
-		const char *argv[] = {"useradd", "--system",
-				      "--no-create-home",
-				      "--shell", "/usr/sbin/nologin",
-				      name.c_str(), nullptr};
-		::execvp("useradd", const_cast<char *const *>(argv));
+		std::vector<char *> argv;
+		argv.push_back(const_cast<char *>(prog.c_str()));
+		for (const std::string &a : args)
+			argv.push_back(const_cast<char *>(a.c_str()));
+		argv.push_back(nullptr);
+
+		::execvp(prog.c_str(), argv.data());
 		/* Only reached if exec failed; _exit rather than exit so the
 		 * parent's stdio buffers are not flushed twice. */
-		std::perror("execvp useradd");
+		std::perror(("execvp " + prog).c_str());
 		::_exit(127);
 	}
 
@@ -81,11 +111,18 @@ int runUseradd(const std::string &name)
 		return -1;
 	}
 	if (!WIFEXITED(status)) {
-		std::cerr << "kvsetup: useradd for " << name
-			  << " did not exit normally\n";
+		std::cerr << "kvsetup: " << prog << " did not exit normally\n";
 		return -1;
 	}
 	return WEXITSTATUS(status);
+}
+
+/* --system: these are service accounts, not login accounts. nologin and no
+ * home directory because nobody should be able to log in as a principal. */
+int runUseradd(const std::string &name)
+{
+	return runTool("useradd", {"--system", "--no-create-home",
+				   "--shell", "/usr/sbin/nologin", name});
 }
 
 } // namespace
@@ -127,6 +164,32 @@ int main()
 		const struct passwd *pw = ::getpwnam(name.c_str());
 		std::cout << "created: " << name << " (uid "
 			  << (pw ? std::to_string(pw->pw_uid) : "?") << ")\n";
+	}
+
+	for (const GroupSpec &g : kGroups) {
+		if (::getgrnam(g.group)) {
+			std::cout << "exists:  group " << g.group << "\n";
+		} else if (runTool("groupadd", {"--system", g.group}) != 0) {
+			std::cerr << "kvsetup: groupadd " << g.group
+				  << " failed\n";
+			++failures;
+			continue;
+		} else {
+			std::cout << "created: group " << g.group << "\n";
+		}
+
+		for (const char *m : g.members) {
+			if (!m)
+				break;
+			if (runTool("usermod", {"-aG", g.group, m}) != 0) {
+				std::cerr << "kvsetup: adding " << m << " to "
+					  << g.group << " failed\n";
+				++failures;
+			} else {
+				std::cout << "         " << m << " in "
+					  << g.group << "\n";
+			}
+		}
 	}
 
 	std::cout <<
