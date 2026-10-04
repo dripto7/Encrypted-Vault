@@ -9,7 +9,7 @@
 | `v0.3` | Design document, UML sources and rendered diagrams, this log |
 | `v0.4` | AES-256-GCM through the kernel crypto API; `UNSEAL`/`SEAL` with a constant-time key check; `PUT`/`GET`; brute-force lockout; the shell setup script rewritten as `kvsetup.cpp` |
 | `v0.5` | Every remaining ioctl; `kv_file.c` serialisation with two-pass authenticated import; `SealedStore`, `PolicyLoader`, `AuditViewer`; finished simulator; three test tiers |
-| `v1.0` | Documentation complete, fresh-clone build verified |
+| `v1.0` | Documentation complete, demo captured, scenario file wired to the simulator, fresh-clone build verified |
 
 Two things did not go according to the plan, both worth recording.
 

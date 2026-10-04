@@ -25,6 +25,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "ScenarioLoader.hpp"
 #include "SimUser.hpp"
 #include "client/AuditViewer.hpp"
 #include "client/PolicyLoader.hpp"
@@ -118,51 +119,62 @@ int printTable(const std::vector<StepResult> &rows)
 } // namespace
 
 /*
- * Seeds the vault for the scenario.
+ * Seeds the vault from the scenario.
  *
  * Done by the parent, as root, before any child exists: the whole point is that
  * the children cannot do this for themselves. Returns false if the vault is not
  * ready, rather than trying to unseal it - the passphrase belongs to whoever is
  * running the simulation, not to the simulation.
  */
-bool seedVault()
+bool seedVault(const ScenarioLoader::Scenario &sc,
+	       std::vector<PolicyLoader::Binding> &bindings)
 {
 	VaultClient c;
 	const kv_status_arg st = c.status();
 
 	if (st.state != KV_STATE_UNSEALED) {
-		std::cerr << "kvsim: the vault is " 
+		std::cerr << "kvsim: the vault is "
 			  << VaultClient::stateName(st.state)
 			  << "; unseal it first:\n"
 			     "         sudo vaultctl unseal [vaultfile]\n";
 		return false;
 	}
 
-	try {
-		for (const PolicyLoader::Binding &b :
-		     PolicyLoader::parse("configs/policy.conf"))
-			c.setRole(b.uid, b.roleId);
-	} catch (const std::exception &e) {
-		std::cerr << "kvsim: policy: " << e.what() << "\n";
-		return false;
-	}
+	for (const PolicyLoader::Binding &b : bindings)
+		c.setRole(b.uid, b.roleId);
 
-	const std::string dbValue  = "s3cr3t-db-pa55word";
-	const std::string tlsValue = "tls-private-key-material";
-	c.put("db_password", {dbValue.begin(), dbValue.end()});
-	c.put("tls_key", {tlsValue.begin(), tlsValue.end()});
+	for (const ScenarioLoader::Secret &sec : sc.secrets)
+		c.put(sec.name, {sec.value.begin(), sec.value.end()});
 
-	/* The developer role may read db_password and nothing else. tls_key is
-	 * granted to bob by UID, so the table below shows role-based and
-	 * identity-based ACLs side by side. */
-	c.grant("db_password", KV_SUBJ_ROLE, KV_ROLE_DEVELOPER, KV_PERM_READ);
-	if (const struct passwd *pw = ::getpwnam("kv_bob"))
-		c.grant("tls_key", KV_SUBJ_UID, pw->pw_uid, KV_PERM_READ);
+	for (const ScenarioLoader::Grant &g : sc.grants)
+		c.grant(g.name, g.subjectKind, g.subjectId, g.perms);
 
 	return true;
 }
 
-int main()
+/* The role a principal holds, from the policy file. It decides which SimUser
+ * subclass represents them - the scenario file says what they attempt, the
+ * policy file says who they are. */
+std::uint32_t roleOf(const std::string &user,
+		     const std::vector<PolicyLoader::Binding> &bindings)
+{
+	for (const PolicyLoader::Binding &b : bindings)
+		if (b.user == user)
+			return b.roleId;
+	return KV_ROLE_GUEST;
+}
+
+SimUserPtr makeUser(const std::string &name, uid_t uid, std::uint32_t role)
+{
+	switch (role) {
+	case KV_ROLE_ADMIN:     return std::make_unique<AdminUser>(name, uid);
+	case KV_ROLE_DEVELOPER: return std::make_unique<DeveloperUser>(name, uid);
+	case KV_ROLE_AUDITOR:   return std::make_unique<AuditorUser>(name, uid);
+	default:                return std::make_unique<GuestUser>(name, uid);
+	}
+}
+
+int main(int argc, char **argv)
 {
 	if (::geteuid() != 0) {
 		std::cerr << "kvsim: must run as root so it can drop to each "
@@ -170,8 +182,35 @@ int main()
 		return 2;
 	}
 
-	if (!seedVault())
+	const std::string policyPath   = (argc >= 2) ? argv[1]
+						     : "configs/policy.conf";
+	const std::string scenarioPath = (argc >= 3) ? argv[2]
+						     : "configs/scenario-default.conf";
+
+	std::vector<PolicyLoader::Binding> bindings;
+	ScenarioLoader::Scenario scenario;
+	try {
+		bindings = PolicyLoader::parse(policyPath);
+		scenario = ScenarioLoader::parse(scenarioPath);
+	} catch (const std::exception &e) {
+		std::cerr << "kvsim: " << e.what() << "\n";
 		return 2;
+	}
+
+	std::cout << "policy:   " << policyPath << " (" << bindings.size()
+		  << " bindings)\n"
+		  << "scenario: " << scenarioPath << " ("
+		  << scenario.secrets.size() << " secrets, "
+		  << scenario.grants.size() << " grants, "
+		  << scenario.users.size() << " principals)\n";
+
+	try {
+		if (!seedVault(scenario, bindings))
+			return 2;
+	} catch (const VaultError &e) {
+		std::cerr << "kvsim: seeding failed: " << e.what() << "\n";
+		return 2;
+	}
 
 	/* Watch the audit stream for the duration. The kernel wakes this thread
 	 * as each decision is recorded, so what it collects is the reference
@@ -184,53 +223,13 @@ int main()
 			  << "\n";
 	}
 
-	/*
-	 * The scenario.
-	 *
-	 * alice is a developer granted READ on db_password; bob is a developer
-	 * who was granted tls_key by UID instead; eve is a guest; carol audits.
-	 * Each step records what the policy says should happen, so an expected
-	 * denial is a pass and an unexpected success is a failure.
-	 */
 	std::vector<SimUserPtr> users;
-	{
-		auto alice = std::make_unique<DeveloperUser>("kv_alice",
-							    lookupUid("kv_alice"));
-		alice->addStep({Step::Op::Get, "db_password", "", true});
-		alice->addStep({Step::Op::Put, "db_password", "overwritten", false});
-		alice->addStep({Step::Op::Get, "tls_key", "", false});
-		alice->addStep({Step::Op::Delete, "db_password", "", false});
-		alice->addStep({Step::Op::List, "", "", true});
-		/* A developer may create a secret of her own, and owns what she
-		 * creates - creation is governed by role, since a secret that
-		 * does not exist yet has no ACL to consult. */
-		alice->addStep({Step::Op::Put, "alice_notes", "hers", true});
-		alice->addStep({Step::Op::Get, "alice_notes", "", true});
-		users.push_back(std::move(alice));
-
-		auto bob = std::make_unique<DeveloperUser>("kv_bob",
-							  lookupUid("kv_bob"));
-		/* Same role as alice, different ACLs: the role is not the
-		 * decision, the ACL is. */
-		bob->addStep({Step::Op::Get, "tls_key", "", true});
-		bob->addStep({Step::Op::Get, "db_password", "", true});
-		bob->addStep({Step::Op::Rotate, "tls_key", "", false});
-		users.push_back(std::move(bob));
-
-		auto eve = std::make_unique<GuestUser>("kv_eve", lookupUid("kv_eve"));
-		eve->addStep({Step::Op::Get, "db_password", "", false});
-		eve->addStep({Step::Op::Get, "tls_key", "", false});
-		/* A guest may not create either: without this check eve could
-		 * squat a name an application expects to own. */
-		eve->addStep({Step::Op::Put, "backdoor", "mine", false});
-		eve->addStep({Step::Op::List, "", "", true});   /* allowed, but empty */
-		users.push_back(std::move(eve));
-
-		auto carol = std::make_unique<AuditorUser>("kv_carol",
-							  lookupUid("kv_carol"));
-		carol->addStep({Step::Op::ReadAudit, "", "", true});
-		carol->addStep({Step::Op::Get, "db_password", "", false});
-		users.push_back(std::move(carol));
+	for (const ScenarioLoader::UserSteps &us : scenario.users) {
+		SimUserPtr u = makeUser(us.user, lookupUid(us.user),
+					roleOf(us.user, bindings));
+		for (const Step &st : us.steps)
+			u->addStep(st);
+		users.push_back(std::move(u));
 	}
 
 	std::vector<StepResult> all;

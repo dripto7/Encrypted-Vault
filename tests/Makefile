@@ -10,11 +10,13 @@
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra -Wpedantic \
-            -I../include -I../src -I../src/client -I..
+            -I../include -I../src -I../src/client -I../src/sim -I..
 LDLIBS   ?= -lcrypto -lpthread
 
 BUILD    := ../build/tests
 CLIENT   := $(wildcard ../src/client/*.cpp)
+# The simulator's parser and principal classes, minus its main().
+SIMLIB   := ../src/sim/ScenarioLoader.cpp ../src/sim/SimUser.cpp
 
 UNIT_SRC := $(wildcard unit/*.cpp)
 INT_SRC  := $(wildcard integration/*.cpp)
@@ -30,9 +32,9 @@ BENCH_BIN := $(BENCH_SRC:%.cpp=$(BUILD)/%)
 
 all: $(UNIT_BIN) $(INT_BIN) $(SYS_BIN) $(BENCH_BIN)
 
-$(BUILD)/%: %.cpp $(CLIENT)
+$(BUILD)/%: %.cpp $(CLIENT) $(SIMLIB)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $< $(CLIENT) -o $@ $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $< $(CLIENT) $(SIMLIB) -o $@ $(LDLIBS)
 
 run: unit integration system
 

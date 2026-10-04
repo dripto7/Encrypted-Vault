@@ -11,12 +11,13 @@ output is in `verification-session.log`, `v05-session.log` and
 |---|---|---|
 | `unit/crypto-helpers` | 7 | 7 passed, 0 skipped, 0 failed |
 | `unit/policy` | 7 | 7 passed, 0 skipped, 0 failed |
+| `unit/scenario` | 8 | 8 passed, 0 skipped, 0 failed |
 | `unit/sealedstore` | 11 | 11 passed, 0 skipped, 0 failed |
 | `integration/ioctl` | 19 | 19 passed, 0 skipped, 0 failed |
 | `system/lifecycle` | 4 | 4 passed, 0 skipped, 0 failed |
 | `kvsim` multi-user scenario | 16 steps | 16/16 as policy specifies |
 | RBAC + persistence session | 26 checks | 26 passed |
-| **Total** | **90** | **90 passed, 0 failed** |
+| **Total** | **98** | **98 passed, 0 failed** |
 
 Kernel health after every run: no `WARNING`, `BUG`, lockdep or KASAN output;
 `rmmod` clean each time.
@@ -50,7 +51,7 @@ than no suite, and §6.6 records the run where exactly that happened.
 | FR-6 auto-lock | `system/lifecycle`: vault reaches `AUTO_LOCKED` with no user-space process involved |
 | FR-7 lockout | `v04` session: `1/3 → 2/3 → LOCKED_OUT`, correct passphrase then refused |
 | FR-8 persistence | Export, reload module, unseal against the file, both secrets read back; one flipped byte rejected |
-| FR-9 simulator | 4 principals, fork + irreversible `setresuid`, results table |
+| FR-9 simulator | 4 principals, fork + irreversible `setresuid`, results table, driven by `configs/scenario-default.conf` |
 | NFR-1 no plaintext at rest | `strings` over the vault file finds neither secret; names *are* present, by design |
 | NFR-2 key not swapped | `mlock` in `SecureBuffer`; kernel memory not swappable; wipe test at `-O2` |
 | NFR-3 no leaks | `dmesg` clean across load/unload cycles including the fuzz |

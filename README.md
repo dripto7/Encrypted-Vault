@@ -124,5 +124,5 @@ sudo make test                 # all three tiers
 make -C tests bench            # GET throughput and the crypto driver in use
 ```
 
-90 cases pass: 25 unit, 19 integration, 4 system, 16 simulator steps and a
+98 cases pass: 33 unit, 19 integration, 4 system, 16 simulator steps and a
 26-check RBAC/persistence session. See [docs/06-test-report.md](docs/06-test-report.md).

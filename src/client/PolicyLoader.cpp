@@ -43,6 +43,28 @@ std::uint32_t PolicyLoader::permsFromString(const std::string &spec)
 	return perms;
 }
 
+void PolicyLoader::subjectFromString(const std::string &spec,
+				     std::uint32_t &kind, std::uint32_t &id)
+{
+	if (spec.rfind("user:", 0) == 0) {
+		const std::string who = spec.substr(5);
+		kind = KV_SUBJ_UID;
+		if (!who.empty() &&
+		    who.find_first_not_of("0123456789") == std::string::npos) {
+			id = static_cast<std::uint32_t>(std::stoul(who));
+			return;
+		}
+		if (const struct passwd *pw = ::getpwnam(who.c_str())) {
+			id = pw->pw_uid;
+			return;
+		}
+		throw std::runtime_error("no such user '" + who + "'");
+	}
+
+	kind = KV_SUBJ_ROLE;
+	id = roleIdFromName(spec);
+}
+
 std::vector<PolicyLoader::Binding> PolicyLoader::parse(const std::string &path)
 {
 	std::ifstream in(path);

@@ -238,36 +238,11 @@ int cmdImport(const std::string &path)
 	return 0;
 }
 
-/* Resolves a subject written either as a role name or as user:<name|uid>. */
-bool parseSubject(const std::string &spec, std::uint32_t &kind,
-		  std::uint32_t &id)
-{
-	if (spec.rfind("user:", 0) == 0) {
-		const std::string who = spec.substr(5);
-		kind = KV_SUBJ_UID;
-		if (who.find_first_not_of("0123456789") == std::string::npos) {
-			id = static_cast<std::uint32_t>(std::stoul(who));
-			return true;
-		}
-		if (const struct passwd *pw = ::getpwnam(who.c_str())) {
-			id = pw->pw_uid;
-			return true;
-		}
-		std::cerr << "vaultctl: no such user '" << who << "'\n";
-		return false;
-	}
-
-	kind = KV_SUBJ_ROLE;
-	id = PolicyLoader::roleIdFromName(spec);
-	return true;
-}
-
 int cmdGrant(const std::string &name, const std::string &subject,
 	     const std::string &perms)
 {
 	std::uint32_t kind, id;
-	if (!parseSubject(subject, kind, id))
-		return 1;
+	PolicyLoader::subjectFromString(subject, kind, id);
 
 	VaultClient c;
 	c.grant(name, kind, id, PolicyLoader::permsFromString(perms));
@@ -279,8 +254,7 @@ int cmdGrant(const std::string &name, const std::string &subject,
 int cmdRevoke(const std::string &name, const std::string &subject)
 {
 	std::uint32_t kind, id;
-	if (!parseSubject(subject, kind, id))
-		return 1;
+	PolicyLoader::subjectFromString(subject, kind, id);
 
 	VaultClient c;
 	c.revoke(name, kind, id);

@@ -1,17 +1,21 @@
-######## 1. load
-crw-rw---- 1 root kvault  235, 0 Oct  4 12:04 /dev/kvault
-cr--r----- 1 root kvaudit 235, 1 Oct  4 12:04 /dev/kvault_audit
-######## 2. setup users (idempotent)
-exists:  kv_alice (uid 997)
-exists:  kv_bob (uid 996)
-exists:  kv_eve (uid 995)
-exists:  kv_carol (uid 994)
-exists:  group kvault
-exists:  group kvaudit
-######## 3. unseal
+######## clean slate: remove the hand-installed udev rule and the groups
+  /etc/udev/rules.d/99-kvault.rules removed
+
+######## 'make load' as the README tells a new user to run it
+make -C /lib/modules/7.1.5+kali-amd64/build M=/home/dex/Projects/KVault/driver modules
+sudo cp scripts/99-kvault.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+sudo insmod driver/kvault.ko
+crw-rw---- 1 root kvault  235, 0 Oct  4 12:33 /dev/kvault
+cr--r----- 1 root kvaudit 235, 1 Oct  4 12:33 /dev/kvault_audit
+
+######## unseal
 Vault is uninitialized; this passphrase will become the vault's.
 unsealed (0 secrets, auto-lock in 300s)
-######## 4. kvsim: the multi-user simulation
+
+######## kvsim, now driven by configs/scenario-default.conf
+policy:   configs/policy.conf (5 bindings)
+scenario: configs/scenario-default.conf (2 secrets, 2 grants, 4 principals)
 
 USER       ROLE       OP      SECRET               RESULT   EXPECTED VERDICT
 ------------------------------------------------------------------------------
@@ -35,29 +39,15 @@ kv_carol   auditor    GET     db_password          deny     deny     PASS
 16/16 steps behaved as the policy says they should
 
 --- the kernel's own audit log for this run (14 records)
-  [10] uid=997 pid=46591 role=developer op=GET name=db_password -> ALLOW
-  [11] uid=997 pid=46591 role=developer op=PUT name=db_password -> DENY (errno 13)
-  [12] uid=997 pid=46591 role=developer op=GET name=tls_key -> DENY (errno 13)
-  [13] uid=997 pid=46591 role=developer op=DELETE name=db_password -> DENY (errno 13)
-  [14] uid=997 pid=46591 role=developer op=LIST name=- -> ALLOW
-  [15] uid=997 pid=46591 role=developer op=PUT name=alice_notes -> ALLOW
-  [16] uid=997 pid=46591 role=developer op=GET name=alice_notes -> ALLOW
-  [17] uid=996 pid=46592 role=developer op=GET name=tls_key -> ALLOW
-  [18] uid=996 pid=46592 role=developer op=GET name=db_password -> ALLOW
-  [19] uid=996 pid=46592 role=developer op=ROTATE name=tls_key -> DENY (errno 13)
-  [20] uid=995 pid=46593 role=guest op=GET name=db_password -> DENY (errno 13)
-  [21] uid=995 pid=46593 role=guest op=GET name=tls_key -> DENY (errno 13)
-  [22] uid=995 pid=46593 role=guest op=PUT name=backdoor -> DENY (errno 13)
-  [23] uid=995 pid=46593 role=guest op=LIST name=- -> ALLOW
-  7 of 14 records are denials
-######## 5. benchmark
-crypto driver: generic-gcm-vaes-avx2 (hardware-accelerated)
-      size        ops        us/op         MB/s
-        16       3000         0.89         17.2
-       256       3000         0.88        278.4
-      1024       3000         0.97       1008.6
-      4096       3000         1.22       3209.2
-######## 6. unit + integration suites
+  [10] uid=997 pid=69402 role=developer op=GET name=db_password -> ALLOW
+  [11] uid=997 pid=69402 role=developer op=PUT name=db_password -> DENY (errno 13)
+  [12] uid=997 pid=69402 role=developer op=GET name=tls_key -> DENY (errno 13)
+  [13] uid=997 pid=69402 role=developer op=DELETE name=db_password -> DENY (errno 13)
+  [14] uid=997 pid=69402 role=developer op=LIST name=- -> ALLOW
+  [15] uid=997 pid=69402 role=developer op=PUT name=alice_notes -> ALLOW
+  [16] uid=997 pid=69402 role=developer op=GET name=alice_notes -> ALLOW
+
+######## full test suite
 == unit/crypto-helpers (7 cases)
   ok    securebuffer_starts_zeroed
   ok    securebuffer_wipe_clears_every_byte
@@ -76,6 +66,16 @@ crypto driver: generic-gcm-vaes-avx2 (hardware-accelerated)
   ok    reports_the_offending_line_number
   ok    rejects_an_unknown_keyword
 -- unit/policy: 7 passed, 0 skipped, 0 failed
+== unit/scenario (8 cases)
+  ok    parses_secrets_grants_and_steps
+  ok    a_secret_value_may_contain_spaces
+  ok    steps_group_by_principal_in_first_appearance_order
+  ok    a_put_without_a_value_gets_a_generated_one
+  ok    every_operation_name_resolves
+  ok    malformed_directives_are_rejected
+  ok    reports_the_offending_line_number
+  ok    the_shipped_scenario_parses
+-- unit/scenario: 8 passed, 0 skipped, 0 failed
 == unit/sealedstore (11 cases)
   ok    save_then_load_round_trips
   ok    saved_file_is_private_to_its_owner
@@ -110,21 +110,20 @@ crypto driver: generic-gcm-vaes-avx2 (hardware-accelerated)
   ok    fuzz_names_and_lengths
   ok    the_audit_device_rejects_ioctls_and_short_reads
 -- integration/ioctl: 19 passed, 0 skipped, 0 failed
-######## 7. system suite (leaves the vault locked; runs last)
 == system/lifecycle (4 cases)
   ok    concurrent_readers_all_get_the_right_plaintext
   ok    concurrent_writers_do_not_corrupt_the_store
   ok    the_vault_locks_itself_when_idle
-        note: the vault is left locked; unseal it again before further use
   ok    a_locked_vault_denies_every_operation
 -- system/lifecycle: 4 passed, 0 skipped, 0 failed
-######## 8. kernel health
-  (no lines above the marker = clean)
-  [ 3068.193161] kvault: loaded (major 235, crypto=generic-gcm-vaes-avx2 accel=1, autolock=300s, max_attempts=3, max_secrets=1024)
-  [ 3069.251264] kvault: vault initialized by uid 0
-  [ 3070.282159] kvault: imported 4 secrets
-  [ 3070.282602] kvault: import: entry 'alice_notes' failed authentication (-74)
-  [ 3072.298507] kvault: auto-locked after 2 s of inactivity
-######## 9. unload
+
+######## kernel health
+  (no lines above = clean)
+[ 4796.646004] kvault: vault initialized by uid 0
+[ 4797.667183] kvault: imported 4 secrets
+[ 4797.667512] kvault: import: entry 'alice_notes' failed authentication (-74)
+[ 4799.706436] kvault: auto-locked after 2 s of inactivity
+
+######## unload
   rmmod clean
-  build tree handed back to 1000:1000
+  build tree handed back

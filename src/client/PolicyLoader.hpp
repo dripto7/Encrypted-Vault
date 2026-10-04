@@ -33,6 +33,13 @@ public:
 
 	static std::uint32_t roleIdFromName(const std::string &name);
 	static std::uint32_t permsFromString(const std::string &spec);
+
+	/* An ACL subject written either as a role name ("developer") or as
+	 * user:<name|uid>. Throws if the role or the user is unknown - a grant
+	 * aimed at a principal that does not exist is a mistake worth stopping
+	 * for, not something to apply to whoever happens to hold that UID. */
+	static void subjectFromString(const std::string &spec,
+				      std::uint32_t &kind, std::uint32_t &id);
 };
 
 } // namespace kvault
