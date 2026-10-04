@@ -201,6 +201,11 @@ int main()
 		alice->addStep({Step::Op::Get, "tls_key", "", false});
 		alice->addStep({Step::Op::Delete, "db_password", "", false});
 		alice->addStep({Step::Op::List, "", "", true});
+		/* A developer may create a secret of her own, and owns what she
+		 * creates - creation is governed by role, since a secret that
+		 * does not exist yet has no ACL to consult. */
+		alice->addStep({Step::Op::Put, "alice_notes", "hers", true});
+		alice->addStep({Step::Op::Get, "alice_notes", "", true});
 		users.push_back(std::move(alice));
 
 		auto bob = std::make_unique<DeveloperUser>("kv_bob",
@@ -215,6 +220,8 @@ int main()
 		auto eve = std::make_unique<GuestUser>("kv_eve", lookupUid("kv_eve"));
 		eve->addStep({Step::Op::Get, "db_password", "", false});
 		eve->addStep({Step::Op::Get, "tls_key", "", false});
+		/* A guest may not create either: without this check eve could
+		 * squat a name an application expects to own. */
 		eve->addStep({Step::Op::Put, "backdoor", "mine", false});
 		eve->addStep({Step::Op::List, "", "", true});   /* allowed, but empty */
 		users.push_back(std::move(eve));

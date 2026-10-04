@@ -163,47 +163,20 @@ KV_TEST(concurrent_writers_do_not_corrupt_the_store)
 	KV_CHECK_EQ(errors.load(), 0);
 }
 
-KV_TEST(sealing_denies_everything_and_unsealing_is_needed_again)
-{
-	if (!ready()) {
-		kvtest::Registry::instance().skip("vault not unsealed");
-		return;
-	}
-	VaultClient c;
-	c.put("kvtest_sealcheck", {'v'});
-
-	c.seal();
-	KV_CHECK_EQ(c.status().state, KV_STATE_SEALED);
-	/* Sealed means no key, so there is nothing to decrypt with - the secret
-	 * still exists but is unreachable, which is the distinction between
-	 * sealing and deleting. */
-	KV_EXPECT_ERRNO(c.get("kvtest_sealcheck"), EPERM);
-	KV_EXPECT_ERRNO(c.put("kvtest_other", {'v'}), EPERM);
-	KV_EXPECT_ERRNO(c.list(), EPERM);
-	KV_EXPECT_ERRNO(c.exportBlob(), EPERM);
-
-	/* The count survives: the entries are still there, just locked. */
-	KV_CHECK(c.status().secret_count > 0);
-
-	std::printf("        note: the vault is now SEALED; later cases that "
-		    "need it unsealed will skip\n");
-}
-
 /*
  * The auto-lock timer.
  *
- * Driven by writing the module parameter rather than by reloading the module,
- * so the test does not need the passphrase: the timer is re-armed from the
- * current parameter value on the next operation, so shortening it and then
- * touching the vault schedules a lock a couple of seconds out.
+ * Driven by writing the module parameter rather than by reloading the module, so
+ * the test does not need the passphrase: the timer is re-armed from the current
+ * parameter value on the next operation, so shortening it and then touching the
+ * vault schedules a lock a couple of seconds out.
  *
- * This runs last because it leaves the vault locked.
+ * This and the case after it both leave the vault locked, so they come last.
  */
 KV_TEST(the_vault_locks_itself_when_idle)
 {
 	if (!ready()) {
-		kvtest::Registry::instance().skip(
-		    "vault not unsealed (expected if the seal case ran first)");
+		kvtest::Registry::instance().skip("vault not unsealed");
 		return;
 	}
 
@@ -231,14 +204,44 @@ KV_TEST(the_vault_locks_itself_when_idle)
 	::sleep(4);
 
 	VaultClient c;
-	const kv_status_arg st = c.status();
-	KV_CHECK_EQ(st.state, KV_STATE_AUTO_LOCKED);
-	/* Locked by the kernel with no user-space process involved. */
-	KV_EXPECT_ERRNO(c.get("kvtest_autolock"), EPERM);
+	KV_CHECK_EQ(c.status().state, KV_STATE_AUTO_LOCKED);
 
 	writeParam(kParamPath, saved);
-	std::printf("        note: the vault is now AUTO_LOCKED; "
-		    "unseal it again before using it\n");
+}
+
+/*
+ * A locked vault refuses everything.
+ *
+ * Deliberately a separate case that runs after the auto-lock one, rather than
+ * sealing the vault itself. Any case that seals leaves every later case with
+ * nothing to work on, so there is exactly one transition to the locked state in
+ * this suite and this case observes the result of it.
+ *
+ * The explicit SEAL ioctl is exercised in the session log instead
+ * (docs/v05-session.log), where the passphrase is known and the vault can be
+ * unsealed again afterwards.
+ */
+KV_TEST(a_locked_vault_denies_every_operation)
+{
+	VaultClient c;
+	const kv_status_arg st = c.status();
+
+	if (st.state == KV_STATE_UNSEALED) {
+		kvtest::Registry::instance().skip(
+		    "vault is still unsealed; the auto-lock case did not run");
+		return;
+	}
+
+	/* No key means nothing to decrypt with. The entries still exist - which
+	 * is the distinction between locking a vault and emptying it. */
+	KV_EXPECT_ERRNO(c.get("kvtest_autolock"), EPERM);
+	KV_EXPECT_ERRNO(c.put("kvtest_while_locked", {'v'}), EPERM);
+	KV_EXPECT_ERRNO(c.list(), EPERM);
+	KV_EXPECT_ERRNO(c.exportBlob(), EPERM);
+	KV_CHECK(c.status().secret_count > 0);
+
+	std::printf("        note: the vault is left locked; unseal it again "
+		    "before further use\n");
 }
 
 KV_TEST_MAIN("system/lifecycle")

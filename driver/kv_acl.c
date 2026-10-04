@@ -64,6 +64,30 @@ int kv_role_bind(u32 uid, u32 role_id)
 	return 0;
 }
 
+/*
+ * Whether a role may bring a new secret into existence.
+ *
+ * This is a separate question from every other permission, and it has to be:
+ * ACLs attach to an object, and when the caller is creating one there is no
+ * object yet to consult. So creation is governed by the caller's role alone.
+ *
+ * It cannot be folded into kv_role_defaults either. Those defaults are the
+ * fallback kv_acl_check() uses for secrets that have no matching ACL entry, so
+ * giving the developer role a default WRITE in order to let it create would
+ * hand it write access to every existing secret in the vault - the opposite of
+ * what was intended.
+ *
+ * Guests and auditors may not create. Without this, any principal able to open
+ * the device could squat a name that an application expects to own: the squatter
+ * becomes the owner, owners have full control, and the application's own writes
+ * are then refused. That is a denial of service at best, and at worst the
+ * squatter reads what something else later stores under that name.
+ */
+bool kv_role_may_create(u32 role)
+{
+	return role == KV_ROLE_ADMIN || role == KV_ROLE_DEVELOPER;
+}
+
 /* Administrative operations need both the admin role and CAP_SYS_ADMIN: the
  * role is vault policy, the capability is the kernel's own notion of
  * privilege, and requiring both means neither alone is enough. */

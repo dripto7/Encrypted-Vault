@@ -86,6 +86,7 @@ extern struct kv_vault kv_vault;
 extern unsigned int kv_autolock_secs;
 extern unsigned int kv_max_attempts;
 extern unsigned int kv_lockout_secs;
+extern unsigned int kv_max_secrets;
 
 /* Wall-clock milliseconds, used for timestamps and lockout deadlines. */
 static inline u64 kv_now_ms(void)
@@ -118,6 +119,7 @@ const char *kv_crypto_driver_name(void);
 /* kv_acl.c */
 u32  kv_role_of(kuid_t uid);
 bool kv_is_admin(kuid_t uid);
+bool kv_role_may_create(u32 role);
 bool kv_acl_check(const struct kv_secret *s, kuid_t uid, u32 want);
 int  kv_acl_set(struct kv_secret *s, u32 kind, u32 id, u32 perms);
 int  kv_acl_revoke(struct kv_secret *s, u32 kind, u32 id);

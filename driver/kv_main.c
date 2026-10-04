@@ -29,6 +29,7 @@ struct kv_vault kv_vault;
 unsigned int kv_autolock_secs = 300;
 unsigned int kv_max_attempts  = 3;
 unsigned int kv_lockout_secs  = 60;
+unsigned int kv_max_secrets   = 1024;
 
 module_param_named(autolock_secs, kv_autolock_secs, uint, 0644);
 MODULE_PARM_DESC(autolock_secs, "Seconds of inactivity before the vault auto-locks (0 disables)");
@@ -36,6 +37,8 @@ module_param_named(max_attempts, kv_max_attempts, uint, 0644);
 MODULE_PARM_DESC(max_attempts, "Failed unseal attempts before lockout");
 module_param_named(lockout_secs, kv_lockout_secs, uint, 0644);
 MODULE_PARM_DESC(lockout_secs, "Lockout duration in seconds after too many failed unseals");
+module_param_named(max_secrets, kv_max_secrets, uint, 0644);
+MODULE_PARM_DESC(max_secrets, "Maximum number of secrets the vault will hold");
 
 static dev_t kv_devt;
 static struct cdev kv_cdev;
@@ -310,9 +313,26 @@ static int kv_ioctl_put(struct kv_session *sess, void __user *uarg)
 	}
 
 	s = kv_store_find(arg->name);
-	if (s && !kv_acl_check(s, sess->uid, KV_PERM_WRITE)) {
-		ret = -EACCES;
-		goto out_audit;
+	if (s) {
+		if (!kv_acl_check(s, sess->uid, KV_PERM_WRITE)) {
+			ret = -EACCES;
+			goto out_audit;
+		}
+	} else {
+		/* Creating a name is its own authorisation question: there is no
+		 * object yet whose ACL could answer it. See kv_role_may_create. */
+		if (!kv_role_may_create(kv_role_of(sess->uid))) {
+			ret = -EACCES;
+			goto out_audit;
+		}
+		/* A bound on the namespace. Without it any principal allowed to
+		 * create could exhaust kernel memory one secret at a time, and
+		 * an allocation failure deep in the kernel is a worse outcome
+		 * than a clear refusal here. */
+		if (kv_vault.secret_count >= kv_max_secrets) {
+			ret = -ENOSPC;
+			goto out_audit;
+		}
 	}
 
 	/* A fresh nonce on every write. Reusing a nonce under the same key
@@ -956,9 +976,10 @@ static int __init kvault_init(void)
 	if (ret)
 		goto err_dev1;
 
-	pr_info("loaded (major %d, crypto=%s accel=%d, autolock=%us, max_attempts=%u)\n",
+	pr_info("loaded (major %d, crypto=%s accel=%d, autolock=%us, max_attempts=%u, max_secrets=%u)\n",
 		MAJOR(kv_devt), kv_crypto_driver_name(),
-		kv_crypto_accelerated(), kv_autolock_secs, kv_max_attempts);
+		kv_crypto_accelerated(), kv_autolock_secs, kv_max_attempts,
+		kv_max_secrets);
 	return 0;
 
 err_dev1:

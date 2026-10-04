@@ -50,11 +50,13 @@ public:
 	int run(const std::string &suite)
 	{
 		int failed = 0;
+		int skipped = 0;
 
 		std::cout << "== " << suite << " (" << cases_.size()
 			  << " cases)\n";
 		for (const Case &c : cases_) {
 			softFailures_ = 0;
+			skipped_ = false;
 			try {
 				c.fn();
 			} catch (const Failure &f) {
@@ -73,12 +75,20 @@ public:
 				std::cout << "  FAIL  " << c.name << " ("
 					  << softFailures_ << " checks)\n";
 				++failed;
+			} else if (skipped_) {
+				/* Reported as skipped, never as a pass: a case
+				 * that did not run has proved nothing, and
+				 * counting it as green is how a suite comes to
+				 * be trusted for coverage it does not have. */
+				std::cout << "  SKIP  " << c.name << "\n";
+				++skipped;
 			} else {
 				std::cout << "  ok    " << c.name << "\n";
 			}
 		}
-		std::cout << "-- " << suite << ": " << cases_.size() - failed
-			  << "/" << cases_.size() << " passed\n";
+		std::cout << "-- " << suite << ": "
+			  << cases_.size() - failed - skipped << " passed, "
+			  << skipped << " skipped, " << failed << " failed\n";
 		return failed;
 	}
 
@@ -93,12 +103,14 @@ public:
 	 * a case that cannot run and reports success is not. */
 	void skip(const std::string &why)
 	{
-		std::cout << "        skipped: " << why << "\n";
+		skipped_ = true;
+		std::cout << "        " << why << "\n";
 	}
 
 private:
 	std::vector<Case> cases_;
 	int softFailures_ = 0;
+	bool skipped_ = false;
 };
 
 struct Registrar {
