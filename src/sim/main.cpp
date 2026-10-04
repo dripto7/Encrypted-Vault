@@ -26,6 +26,8 @@
 #include <unistd.h>
 
 #include "SimUser.hpp"
+#include "client/AuditViewer.hpp"
+#include "client/PolicyLoader.hpp"
 
 using namespace kvault;
 using namespace kvault::sim;
@@ -91,7 +93,7 @@ void dropTo(const std::string &user, uid_t uid)
 	}
 }
 
-void printTable(const std::vector<StepResult> &rows)
+int printTable(const std::vector<StepResult> &rows)
 {
 	std::printf("\n%-10s %-10s %-7s %-20s %-8s %-8s %s\n",
 		    "USER", "ROLE", "OP", "SECRET", "RESULT", "EXPECTED", "VERDICT");
@@ -110,9 +112,55 @@ void printTable(const std::vector<StepResult> &rows)
 	}
 	std::printf("\n%d/%zu steps behaved as the policy says they should\n",
 		    pass, rows.size());
+	return static_cast<int>(rows.size()) - pass;
 }
 
 } // namespace
+
+/*
+ * Seeds the vault for the scenario.
+ *
+ * Done by the parent, as root, before any child exists: the whole point is that
+ * the children cannot do this for themselves. Returns false if the vault is not
+ * ready, rather than trying to unseal it - the passphrase belongs to whoever is
+ * running the simulation, not to the simulation.
+ */
+bool seedVault()
+{
+	VaultClient c;
+	const kv_status_arg st = c.status();
+
+	if (st.state != KV_STATE_UNSEALED) {
+		std::cerr << "kvsim: the vault is " 
+			  << VaultClient::stateName(st.state)
+			  << "; unseal it first:\n"
+			     "         sudo vaultctl unseal [vaultfile]\n";
+		return false;
+	}
+
+	try {
+		for (const PolicyLoader::Binding &b :
+		     PolicyLoader::parse("configs/policy.conf"))
+			c.setRole(b.uid, b.roleId);
+	} catch (const std::exception &e) {
+		std::cerr << "kvsim: policy: " << e.what() << "\n";
+		return false;
+	}
+
+	const std::string dbValue  = "s3cr3t-db-pa55word";
+	const std::string tlsValue = "tls-private-key-material";
+	c.put("db_password", {dbValue.begin(), dbValue.end()});
+	c.put("tls_key", {tlsValue.begin(), tlsValue.end()});
+
+	/* The developer role may read db_password and nothing else. tls_key is
+	 * granted to bob by UID, so the table below shows role-based and
+	 * identity-based ACLs side by side. */
+	c.grant("db_password", KV_SUBJ_ROLE, KV_ROLE_DEVELOPER, KV_PERM_READ);
+	if (const struct passwd *pw = ::getpwnam("kv_bob"))
+		c.grant("tls_key", KV_SUBJ_UID, pw->pw_uid, KV_PERM_READ);
+
+	return true;
+}
 
 int main()
 {
@@ -122,19 +170,52 @@ int main()
 		return 2;
 	}
 
-	/* The scenario: alice is a developer who has been granted READ on
-	 * db_password, bob is a developer who has not, eve is a guest, and
-	 * carol audits. */
+	if (!seedVault())
+		return 2;
+
+	/* Watch the audit stream for the duration. The kernel wakes this thread
+	 * as each decision is recorded, so what it collects is the reference
+	 * monitor's own account of the run - not the simulator's. */
+	AuditViewer watcher;
+	try {
+		watcher.start();
+	} catch (const VaultError &e) {
+		std::cerr << "kvsim: cannot watch the audit log: " << e.what()
+			  << "\n";
+	}
+
+	/*
+	 * The scenario.
+	 *
+	 * alice is a developer granted READ on db_password; bob is a developer
+	 * who was granted tls_key by UID instead; eve is a guest; carol audits.
+	 * Each step records what the policy says should happen, so an expected
+	 * denial is a pass and an unexpected success is a failure.
+	 */
 	std::vector<SimUserPtr> users;
 	{
 		auto alice = std::make_unique<DeveloperUser>("kv_alice",
 							    lookupUid("kv_alice"));
 		alice->addStep({Step::Op::Get, "db_password", "", true});
 		alice->addStep({Step::Op::Put, "db_password", "overwritten", false});
+		alice->addStep({Step::Op::Get, "tls_key", "", false});
+		alice->addStep({Step::Op::Delete, "db_password", "", false});
+		alice->addStep({Step::Op::List, "", "", true});
 		users.push_back(std::move(alice));
+
+		auto bob = std::make_unique<DeveloperUser>("kv_bob",
+							  lookupUid("kv_bob"));
+		/* Same role as alice, different ACLs: the role is not the
+		 * decision, the ACL is. */
+		bob->addStep({Step::Op::Get, "tls_key", "", true});
+		bob->addStep({Step::Op::Get, "db_password", "", true});
+		bob->addStep({Step::Op::Rotate, "tls_key", "", false});
+		users.push_back(std::move(bob));
 
 		auto eve = std::make_unique<GuestUser>("kv_eve", lookupUid("kv_eve"));
 		eve->addStep({Step::Op::Get, "db_password", "", false});
+		eve->addStep({Step::Op::Get, "tls_key", "", false});
+		eve->addStep({Step::Op::Put, "backdoor", "mine", false});
 		eve->addStep({Step::Op::List, "", "", true});   /* allowed, but empty */
 		users.push_back(std::move(eve));
 
@@ -223,6 +304,24 @@ int main()
 		}
 	}
 
-	printTable(all);
-	return 0;
+	const int failures = printTable(all);
+
+	/* Give the watcher a moment to drain the last wake-up, then report what
+	 * the kernel logged. Every denial above should appear here: an access
+	 * that was refused but not recorded would be the worst outcome of all. */
+	::usleep(300000);
+	watcher.stop();
+	const std::vector<kv_audit_rec> records = watcher.take();
+
+	std::printf("\n--- the kernel's own audit log for this run (%zu records)\n",
+		    records.size());
+	int denials = 0;
+	for (const kv_audit_rec &r : records) {
+		if (r.result == KV_RESULT_DENY)
+			++denials;
+		std::printf("  %s\n", AuditViewer::format(r).c_str());
+	}
+	std::printf("  %d of %zu records are denials\n", denials, records.size());
+
+	return failures ? 1 : 0;
 }

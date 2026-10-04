@@ -1,0 +1,25 @@
+Vault is uninitialized; this passphrase will become the vault's.
+unsealed (0 secrets, auto-lock in 300s)
+make: Entering directory '/home/dripta/Projects/KVault/tests'
+== integration/ioctl (19 cases)
+  ok    status_reports_a_sane_abi_and_state
+  ok    an_unknown_ioctl_is_rejected
+  ok    names_are_validated
+  ok    empty_and_oversized_values_are_rejected
+  ok    round_trip_at_both_size_boundaries
+  ok    a_value_containing_nul_bytes_survives
+  ok    missing_secrets_report_enoent
+  ok    put_overwrites_and_bumps_the_version
+  ok    rotate_preserves_the_plaintext
+  ok    delete_removes_it
+  ok    list_includes_what_we_just_stored
+  ok    grant_rejects_undefined_permission_bits
+  ok    revoking_an_absent_entry_reports_enoent
+  ok    set_role_rejects_an_unknown_role
+  ok    export_import_round_trip
+  ok    import_rejects_rubbish
+  ok    import_rejects_a_single_flipped_bit
+  ok    fuzz_names_and_lengths
+  ok    the_audit_device_rejects_ioctls_and_short_reads
+-- integration/ioctl: 19/19 passed
+make: Leaving directory '/home/dripta/Projects/KVault/tests'

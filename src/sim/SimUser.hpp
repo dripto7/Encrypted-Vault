@@ -58,7 +58,14 @@ public:
 	virtual std::vector<StepResult> run();
 
 protected:
-	StepResult execute(VaultClient &client, const Step &step);
+	/*
+	 * @client may be null: a principal who is not in the kvault group cannot
+	 * open the control device at all, and that refusal is a legitimate
+	 * outcome to record rather than an error to crash on. The step is then
+	 * denied with the errno from open(), except for ReadAudit, which opens
+	 * the audit minor itself.
+	 */
+	StepResult execute(VaultClient *client, const Step &step, int openErr);
 
 	std::string       name_;
 	uid_t             uid_;
