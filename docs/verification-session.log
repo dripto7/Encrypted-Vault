@@ -1,6 +1,6 @@
 ######## 1. load
-crw-rw---- 1 root kvault  235, 0 Oct  4 11:56 /dev/kvault
-cr--r----- 1 root kvaudit 235, 1 Oct  4 11:56 /dev/kvault_audit
+crw-rw---- 1 root kvault  235, 0 Oct  4 12:04 /dev/kvault
+cr--r----- 1 root kvaudit 235, 1 Oct  4 12:04 /dev/kvault_audit
 ######## 2. setup users (idempotent)
 exists:  kv_alice (uid 997)
 exists:  kv_bob (uid 996)
@@ -35,28 +35,28 @@ kv_carol   auditor    GET     db_password          deny     deny     PASS
 16/16 steps behaved as the policy says they should
 
 --- the kernel's own audit log for this run (14 records)
-  [10] uid=997 pid=39227 role=developer op=GET name=db_password -> ALLOW
-  [11] uid=997 pid=39227 role=developer op=PUT name=db_password -> DENY (errno 13)
-  [12] uid=997 pid=39227 role=developer op=GET name=tls_key -> DENY (errno 13)
-  [13] uid=997 pid=39227 role=developer op=DELETE name=db_password -> DENY (errno 13)
-  [14] uid=997 pid=39227 role=developer op=LIST name=- -> ALLOW
-  [15] uid=997 pid=39227 role=developer op=PUT name=alice_notes -> ALLOW
-  [16] uid=997 pid=39227 role=developer op=GET name=alice_notes -> ALLOW
-  [17] uid=996 pid=39228 role=developer op=GET name=tls_key -> ALLOW
-  [18] uid=996 pid=39228 role=developer op=GET name=db_password -> ALLOW
-  [19] uid=996 pid=39228 role=developer op=ROTATE name=tls_key -> DENY (errno 13)
-  [20] uid=995 pid=39229 role=guest op=GET name=db_password -> DENY (errno 13)
-  [21] uid=995 pid=39229 role=guest op=GET name=tls_key -> DENY (errno 13)
-  [22] uid=995 pid=39229 role=guest op=PUT name=backdoor -> DENY (errno 13)
-  [23] uid=995 pid=39229 role=guest op=LIST name=- -> ALLOW
+  [10] uid=997 pid=46591 role=developer op=GET name=db_password -> ALLOW
+  [11] uid=997 pid=46591 role=developer op=PUT name=db_password -> DENY (errno 13)
+  [12] uid=997 pid=46591 role=developer op=GET name=tls_key -> DENY (errno 13)
+  [13] uid=997 pid=46591 role=developer op=DELETE name=db_password -> DENY (errno 13)
+  [14] uid=997 pid=46591 role=developer op=LIST name=- -> ALLOW
+  [15] uid=997 pid=46591 role=developer op=PUT name=alice_notes -> ALLOW
+  [16] uid=997 pid=46591 role=developer op=GET name=alice_notes -> ALLOW
+  [17] uid=996 pid=46592 role=developer op=GET name=tls_key -> ALLOW
+  [18] uid=996 pid=46592 role=developer op=GET name=db_password -> ALLOW
+  [19] uid=996 pid=46592 role=developer op=ROTATE name=tls_key -> DENY (errno 13)
+  [20] uid=995 pid=46593 role=guest op=GET name=db_password -> DENY (errno 13)
+  [21] uid=995 pid=46593 role=guest op=GET name=tls_key -> DENY (errno 13)
+  [22] uid=995 pid=46593 role=guest op=PUT name=backdoor -> DENY (errno 13)
+  [23] uid=995 pid=46593 role=guest op=LIST name=- -> ALLOW
   7 of 14 records are denials
 ######## 5. benchmark
 crypto driver: generic-gcm-vaes-avx2 (hardware-accelerated)
       size        ops        us/op         MB/s
-        16       3000         1.27         12.0
-       256       3000         0.94        258.9
-      1024       3000         1.02        959.0
-      4096       3000         1.35       2897.8
+        16       3000         0.89         17.2
+       256       3000         0.88        278.4
+      1024       3000         0.97       1008.6
+      4096       3000         1.22       3209.2
 ######## 6. unit + integration suites
 == unit/crypto-helpers (7 cases)
   ok    securebuffer_starts_zeroed
@@ -120,11 +120,11 @@ crypto driver: generic-gcm-vaes-avx2 (hardware-accelerated)
 -- system/lifecycle: 4 passed, 0 skipped, 0 failed
 ######## 8. kernel health
   (no lines above the marker = clean)
-  [ 2615.905547] kvault: loaded (major 235, crypto=generic-gcm-vaes-avx2 accel=1, autolock=300s, max_attempts=3, max_secrets=1024)
-  [ 2616.972041] kvault: vault initialized by uid 0
-  [ 2618.007597] kvault: imported 4 secrets
-  [ 2618.008042] kvault: import: entry 'alice_notes' failed authentication (-74)
-  [ 2620.031821] kvault: auto-locked after 2 s of inactivity
+  [ 3068.193161] kvault: loaded (major 235, crypto=generic-gcm-vaes-avx2 accel=1, autolock=300s, max_attempts=3, max_secrets=1024)
+  [ 3069.251264] kvault: vault initialized by uid 0
+  [ 3070.282159] kvault: imported 4 secrets
+  [ 3070.282602] kvault: import: entry 'alice_notes' failed authentication (-74)
+  [ 3072.298507] kvault: auto-locked after 2 s of inactivity
 ######## 9. unload
   rmmod clean
   build tree handed back to 1000:1000

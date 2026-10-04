@@ -1030,4 +1030,4 @@ module_exit(kvault_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("KVault project");
 MODULE_DESCRIPTION("Kernel-backed encrypted secrets vault with UID-based RBAC and audit");
-MODULE_VERSION("0.1");
+MODULE_VERSION("1.0");
