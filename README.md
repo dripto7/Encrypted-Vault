@@ -93,6 +93,8 @@ Full design, UML and the state machines are in [docs/](docs/):
 **[EXPLANATION.md](EXPLANATION.md)** is the single document that covers all of
 it: how every part works, what each diagram and screenshot shows, the full
 command reference, the demo script, and interview questions with answers.
+**[BRIEF.md](BRIEF.md)** is the two-page summary of the same material
+([print-ready PDF](docs/KVault-panel-brief.pdf)).
 
 ## Demo
 
