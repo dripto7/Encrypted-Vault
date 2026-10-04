@@ -1,0 +1,149 @@
+@startuml
+' Class diagram for the user-space library and tools.
+title KVault user space - class diagram
+
+skinparam shadowing false
+skinparam defaultFontName Sans
+skinparam classAttributeIconSize 0
+
+package "src/client" {
+
+  class SecureBuffer<N> <<template>> {
+    -data_ : unsigned char[N]
+    -locked_ : bool
+    +SecureBuffer()
+    +~SecureBuffer()
+    +wipe() : void
+    +data() : unsigned char *
+    +size() : size_t {static}
+    +locked() : bool
+    --
+    copy ctor = delete
+    copy assign = delete
+  }
+  note right of SecureBuffer
+    mlock()s its pages so the key
+    cannot be swapped to disk, and
+    wipes through a volatile pointer
+    so the compiler may not elide it.
+    Non-copyable: every copy would be
+    another place needing a wipe.
+  end note
+
+  class KeyDeriver <<static>> {
+    +kDefaultIterations : unsigned = 200000 {static}
+    +derive(pass, salt, iters, out) : void {static}
+    +randomSalt() : Salt {static}
+    +randomBytes(out, len) : void {static}
+  }
+
+  class Passphrase <<static>> {
+    +read(prompt) : string {static}
+    +readConfirmed(prompt) : string {static}
+  }
+  note bottom of Passphrase
+    Suppresses terminal echo through an
+    RAII guard; skips it when stdin is a
+    pipe, where there is no echo to leak.
+  end note
+
+  class VaultError {
+    +errnoValue() : int
+  }
+
+  class VaultClient {
+    -fd_ : int
+    +VaultClient(dev, path)
+    +~VaultClient()
+    +status() : kv_status_arg
+    +unseal(key, salt, iters) : void
+    +seal() : void
+    +put(name, plaintext) : void
+    +get(name) : vector<uint8_t>
+    +remove(name) : void
+    +rotate(name) : void
+    +list() : vector<string>
+    +grant(name, kind, id, perms) : void
+    +revoke(name, kind, id) : void
+    +setRole(uid, role) : void
+    +exportBlob() : vector<uint8_t>
+    +importBlob(blob) : void
+    +readAudit() : kv_audit_rec
+    -callIoctl(req, arg, what) : void
+    --
+    move-only (owns the fd)
+  }
+
+  class SealedStore <<static>> {
+    +save(path, blob) : void {static}
+    +load(path) : vector<uint8_t> {static}
+    +readHeader(path) : Header {static}
+    +exists(path) : bool {static}
+  }
+
+  class PolicyLoader <<static>> {
+    +parse(path) : vector<Binding> {static}
+    +roleIdFromName(name) : uint32 {static}
+    +permsFromString(spec) : uint32 {static}
+  }
+
+  class AuditViewer {
+    -onRecord_ : Callback
+    -stop_ : atomic<bool>
+    -thread_ : std::thread
+    -mutex_ : std::mutex
+    -records_ : vector<kv_audit_rec>
+    +start() : void
+    +stop() : void
+    +take() : vector<kv_audit_rec>
+    +count() : size_t
+    +format(rec) : string {static}
+  }
+}
+
+package "src/sim" {
+  abstract class SimUser {
+    #name_ : string
+    #uid_ : uid_t
+    #role_ : uint32
+    #steps_ : vector<Step>
+    +addStep(Step) : void
+    +{abstract} run() : vector<StepResult>
+    #execute(client, step, openErr) : StepResult
+  }
+
+  class AdminUser
+  class DeveloperUser
+  class AuditorUser
+  class GuestUser
+
+  SimUser <|-- AdminUser
+  SimUser <|-- DeveloperUser
+  SimUser <|-- AuditorUser
+  SimUser <|-- GuestUser
+
+  class Step <<struct>> {
+    +op : Op
+    +name : string
+    +value : string
+    +expectAllowed : bool
+  }
+
+  class StepResult <<struct>> {
+    +user : string
+    +role : string
+    +op : string
+    +allowed : bool
+    +expected : bool
+    +err : int
+  }
+}
+
+std.system_error <|-- VaultError
+KeyDeriver ..> SecureBuffer : fills
+VaultClient ..> VaultError : throws
+AuditViewer *-- VaultClient : owns (audit minor)
+SimUser ..> VaultClient : uses
+SimUser *-- Step
+SimUser ..> StepResult : produces
+@enduml

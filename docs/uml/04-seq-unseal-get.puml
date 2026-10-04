@@ -1,0 +1,69 @@
+@startuml
+' Happy path: unseal, then an authorised GET.
+title Unseal, then an authorised GET
+
+skinparam shadowing false
+skinparam defaultFontName Sans
+skinparam sequenceMessageAlign center
+
+actor "admin\n(uid 0)" as Admin
+participant "vaultctl" as CLI
+participant "KeyDeriver\n(OpenSSL)" as KD
+participant "SecureBuffer" as SB
+box "kernel (ring 0)" #F4F4F4
+  participant "kv_main\nioctl" as MAIN
+  participant "kv_acl\nref. monitor" as ACL
+  participant "kv_crypto" as CRY
+  participant "kv_store" as ST
+  participant "kv_audit" as AUD
+end box
+
+== unseal ==
+Admin -> CLI : vaultctl unseal vault.kv
+CLI -> CLI : SealedStore::readHeader()
+note right: salt and iteration count come\nfrom the FILE, not the kernel:\na fresh module knows no salt
+CLI -> Admin : "Passphrase:" (echo off)
+Admin --> CLI : passphrase
+CLI -> KD : derive(pass, salt, 200000)
+KD -> SB : write 32-byte key\n(mlock'd pages)
+CLI -> CLI : OPENSSL_cleanse(passphrase)
+
+CLI -> MAIN : ioctl(UNSEAL, {key, salt, iters})
+MAIN -> ACL : kv_is_admin(current_uid())
+ACL --> MAIN : true (admin role + CAP_SYS_ADMIN)
+MAIN -> CRY : kv_crypto_kcv_matches(key, stored)
+note right of CRY : crypto_memneq: constant time,\nso a wrong key leaks no\nprefix length
+CRY --> MAIN : match
+MAIN -> MAIN : copy key into vault state\nstate := UNSEALED\narm auto-lock timer
+MAIN -> AUD : log(uid, UNSEAL, ALLOW)
+MAIN --> CLI : 0
+CLI -> SB : ~SecureBuffer: wipe + munlock
+note left of SB : the only user-space copy\nis now gone
+
+CLI -> MAIN : ioctl(IMPORT, sealed blob)
+MAIN -> CRY : authenticate EVERY entry (pass 1)
+CRY --> MAIN : all tags verify
+MAIN -> ST : insert entries (pass 2)
+MAIN --> CLI : 0
+
+== authorised GET ==
+actor "kv_alice\n(uid 997, developer)" as Alice
+participant "application" as App
+Alice -> App : run
+App -> MAIN : ioctl(GET, "db_password")
+MAIN -> MAIN : kv_check_name()
+MAIN -> ST : kv_store_find("db_password")
+ST --> MAIN : &secret
+MAIN -> ACL : kv_acl_check(secret, uid 997, READ)
+note right of ACL
+  owner? no
+  admin? no
+  ACL: role developer -> READ  ** match **
+end note
+ACL --> MAIN : allowed
+MAIN -> CRY : decrypt(key, nonce, aad=name, ct, tag)
+CRY --> MAIN : plaintext in a kernel buffer
+MAIN -> MAIN : copy_to_user(plaintext)\nkfree_sensitive(buffer)
+MAIN -> AUD : log(997, GET, db_password, ALLOW)
+MAIN --> App : 0 + plaintext
+@enduml

@@ -1,0 +1,62 @@
+@startuml
+' A grant changing the outcome of an identical request.
+title GRANT - the same request, before and after
+
+skinparam shadowing false
+skinparam defaultFontName Sans
+
+actor "kv_alice\n(uid 997, developer)" as Alice
+actor "admin\n(uid 0)" as Admin
+box "kernel (ring 0)" #F4F4F4
+  participant "kv_main" as MAIN
+  participant "kv_acl" as ACL
+  participant "kv_store" as ST
+  participant "kv_audit" as AUD
+end box
+
+== 1. before the grant ==
+Alice -> MAIN : ioctl(GET, "db_password")
+MAIN -> ACL : check(uid 997, READ)
+ACL --> MAIN : denied (no ACL entry, guest-level default)
+MAIN -> AUD : log(997, GET, DENY, -EACCES)
+MAIN --> Alice : -EACCES
+
+== 2. the admin grants the role ==
+Admin -> MAIN : ioctl(GRANT, {db_password,\nrole=developer, perms=READ})
+MAIN -> ST : kv_store_find()
+ST --> MAIN : &secret
+MAIN -> ACL : kv_acl_check(secret, uid 0, GRANT)
+note right of ACL
+  Delegation is itself a permission.
+  Without requiring GRANT here, any
+  principal who could read a secret
+  could share it with everyone.
+end note
+ACL --> MAIN : allowed (admin)
+MAIN -> ST : kv_acl_set(secret, ROLE, developer, READ)
+MAIN -> AUD : log(0, GRANT, db_password, ALLOW)
+MAIN --> Admin : 0
+
+== 3. the identical request, now allowed ==
+Alice -> MAIN : ioctl(GET, "db_password")
+note left of Alice
+  Same binary, same arguments,
+  same process credentials.
+  Nothing on Alice's side changed.
+end note
+MAIN -> ACL : check(uid 997, READ)
+ACL --> MAIN : allowed (role developer -> READ)
+MAIN -> AUD : log(997, GET, ALLOW)
+MAIN --> Alice : 0 + plaintext
+
+== 4. and revoking puts it back ==
+Admin -> MAIN : ioctl(REVOKE, {db_password, role=developer})
+MAIN --> Admin : 0
+Alice -> MAIN : ioctl(GET, "db_password")
+MAIN --> Alice : -EACCES
+note over MAIN, AUD
+  No restart, no reload, no cache to
+  invalidate: the decision is taken
+  fresh from vault state on every call.
+end note
+@enduml

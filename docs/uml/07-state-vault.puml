@@ -1,0 +1,59 @@
+@startuml
+' Vault lifecycle. Every transition that destroys the key is marked.
+title Vault state machine
+
+skinparam shadowing false
+skinparam defaultFontName Sans
+
+[*] --> SEALED : insmod\n(no key, no KCV)
+
+state SEALED {
+  SEALED : key_present = false
+  SEALED : every secret operation -> EPERM
+}
+
+state UNSEALED {
+  UNSEALED : key held in kernel memory
+  UNSEALED : auto-lock timer armed
+  UNSEALED : failed_attempts = 0
+}
+
+state AUTO_LOCKED {
+  AUTO_LOCKED : key wiped
+  AUTO_LOCKED : entries still present
+}
+
+state LOCKED_OUT {
+  LOCKED_OUT : key wiped
+  LOCKED_OUT : UNSEAL refused WITHOUT
+  LOCKED_OUT : performing the key check
+}
+
+SEALED --> UNSEALED : UNSEAL, key check passes\n(or first ever unseal:\nadopt the passphrase)
+SEALED --> SEALED : UNSEAL fails\n**failed_attempts++**
+SEALED --> LOCKED_OUT : UNSEAL fails and\nfailed_attempts >= max_attempts\n**key wiped, audit LOCKOUT**
+
+UNSEALED --> SEALED : SEAL (admin)\n**key wiped**
+UNSEALED --> AUTO_LOCKED : kernel timer fires after\nautolock_secs of inactivity\n**key wiped, no user space involved**
+UNSEALED --> UNSEALED : any operation\nre-arms the timer
+
+AUTO_LOCKED --> UNSEALED : UNSEAL, key check passes
+AUTO_LOCKED --> LOCKED_OUT : too many failed unseals
+
+LOCKED_OUT --> SEALED : lockout_secs elapsed\n(checked lazily, on the next\noperation that looks at state)
+LOCKED_OUT --> LOCKED_OUT : UNSEAL -> EAGAIN\n(even with the CORRECT passphrase)
+
+UNSEALED --> [*] : rmmod\n**key wiped, store freed**
+SEALED --> [*] : rmmod
+AUTO_LOCKED --> [*] : rmmod
+LOCKED_OUT --> [*] : rmmod
+
+note as N1
+  Every transition out of UNSEALED
+  wipes the key with memzero_explicit,
+  not memset: the compiler is allowed
+  to delete a memset whose result is
+  never read, which is exactly the
+  case here.
+end note
+@enduml

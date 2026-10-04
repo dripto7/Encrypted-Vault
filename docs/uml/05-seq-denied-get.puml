@@ -1,0 +1,74 @@
+@startuml
+' The interesting path: a denial, and the auditor being woken by it.
+title An unauthorised GET - denied, audited, and the watcher woken
+
+skinparam shadowing false
+skinparam defaultFontName Sans
+
+actor "kv_eve\n(uid 995, guest)" as Eve
+participant "vaultctl" as CLI
+box "kernel (ring 0)" #F4F4F4
+  participant "kv_main\nioctl" as MAIN
+  participant "kv_acl\nref. monitor" as ACL
+  participant "kv_store" as ST
+  participant "kv_audit\nring + wait queue" as AUD
+end box
+participant "AuditViewer\n(std::thread)" as AV
+actor "kv_carol\n(uid 994, auditor)" as Carol
+
+== before the attempt ==
+Carol -> AV : start()
+AV -> MAIN : open("/dev/kvault_audit")
+note right of MAIN
+  cursor starts at the current end of
+  the log: the watcher streams what
+  happens next, it does not replay
+end note
+AV -> AUD : poll(POLLIN)
+AUD --> AV : blocks on the wait queue
+note left of AV : no polling loop:\nthe thread sleeps until\nthe kernel wakes it
+
+== the attempt ==
+Eve -> CLI : vaultctl get db_password
+CLI -> MAIN : ioctl(GET, "db_password")
+MAIN -> MAIN : kv_check_name() ok
+MAIN -> ST : kv_store_find()
+ST --> MAIN : &secret
+MAIN -> ACL : kv_acl_check(secret, uid 995, READ)
+note right of ACL
+  owner? no
+  admin? no
+  ACL: no entry for uid 995
+       no entry for role guest
+  role default for guest = 0
+  ** denied **
+end note
+ACL --> MAIN : denied
+
+MAIN -> AUD : log(995, GET, db_password, DENY, -EACCES)
+activate AUD
+AUD -> AUD : append under spinlock\n(safe: never sleeps)
+AUD -> AV : wake_up_interruptible()
+deactivate AUD
+
+MAIN --> CLI : -EACCES
+note right of MAIN
+  Nothing was decrypted and nothing
+  was copied back - not even a zeroed
+  buffer. There is no path that returns
+  a partial result.
+end note
+CLI --> Eve : "Permission denied"
+
+== the denial is observed ==
+AUD --> AV : POLLIN
+AV -> AUD : read() one fixed-size record
+AUD --> AV : {seq, ts, uid 995, pid, guest, GET,\n db_password, DENY, -13}
+AV -> Carol : "uid=995 role=guest op=GET -> DENY"
+note over Carol
+  Eve cannot suppress this. The record
+  is written by the same code path that
+  refused her, before the error is
+  returned to her.
+end note
+@enduml

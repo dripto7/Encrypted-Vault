@@ -1,0 +1,132 @@
+@startuml
+' The kernel-side structures. Shown as a separate package because these are C
+' structs, not classes: no inheritance, no methods, and the "operations" are
+' free functions that take them.
+title KVault kernel - data structures
+
+skinparam shadowing false
+skinparam defaultFontName Sans
+skinparam classAttributeIconSize 0
+
+package "driver (C structs)" {
+
+  class kv_vault <<struct>> {
+    +lock : struct mutex
+    +state : u32
+    +key : u8[32]
+    +key_present : bool
+    +kcv : u8[32]
+    +salt : u8[16]
+    +kdf_iterations : u32
+    +failed_attempts : u32
+    +lockout_until_ms : u64
+    +last_activity_ms : u64
+    +secrets : hlist_head[256]
+    +secret_count : u32
+    +uid_roles : kv_uid_role[64]
+    +autolock_timer : timer_list
+  }
+  note right of kv_vault
+    One global instance: the device
+    represents one vault, the way a
+    TPM represents one chip.
+    One mutex guards all of it.
+  end note
+
+  class kv_secret <<struct>> {
+    +node : hlist_node
+    +name : char[64]
+    +owner : kuid_t
+    +version : u32
+    +created_ms : u64
+    +modified_ms : u64
+    +nonce : u8[12]
+    +tag : u8[16]
+    +ct : u8 *
+    +ct_len : u32
+    +acl : kv_acl_entry[16]
+    +acl_count : u32
+  }
+  note right of kv_secret
+    No plaintext member, by design:
+    only ciphertext plus the nonce
+    and tag needed to recover it.
+  end note
+
+  class kv_acl_entry <<struct>> {
+    +subject_kind : u32
+    +subject_id : u32
+    +perms : u32
+  }
+
+  class kv_uid_role <<struct>> {
+    +uid : u32
+    +role_id : u32
+    +used : bool
+  }
+
+  class kv_session <<struct>> {
+    +uid : kuid_t
+    +pid : pid_t
+    +opened_ms : u64
+    +op_count : u64
+    +audit_cursor : u64
+  }
+  note bottom of kv_session
+    One per open(), held in
+    file->private_data. The UID is
+    captured at open time from
+    current_uid().
+  end note
+
+  class kv_audit_rec <<struct>> {
+    +seq : u64
+    +timestamp_ms : u64
+    +uid : u32
+    +pid : u32
+    +op : u32
+    +result : u32
+    +err : s32
+    +role : u32
+    +name : char[64]
+  }
+}
+
+package "on disk (little-endian)" {
+  class kv_file_header <<struct>> {
+    +magic : u32 = 'KVAL'
+    +version : u32
+    +kdf_iterations : u32
+    +entry_count : u32
+    +salt : u8[16]
+    +kcv : u8[32]
+  }
+
+  class kv_file_entry <<struct>> {
+    +name : char[64]
+    +owner_uid : u32
+    +version : u32
+    +created_ms : u64
+    +modified_ms : u64
+    +ct_len : u32
+    +acl_count : u32
+    +nonce : u8[12]
+    +tag : u8[16]
+  }
+
+  class kv_file_acl <<struct>> {
+    +subject_kind : u32
+    +subject_id : u32
+    +perms : u32
+  }
+}
+
+kv_vault "1" *-- "0..*" kv_secret : hash table
+kv_vault "1" *-- "64" kv_uid_role
+kv_secret "1" *-- "0..16" kv_acl_entry
+kv_file_header "1" *-- "0..*" kv_file_entry
+kv_file_entry "1" *-- "0..16" kv_file_acl
+
+kv_secret ..> kv_file_entry : kv_export / kv_import
+kv_acl_entry ..> kv_file_acl
+@enduml

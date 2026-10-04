@@ -1,0 +1,77 @@
+@startuml
+' Component view: what lives on each side of the syscall boundary.
+title KVault architecture
+
+skinparam shadowing false
+skinparam defaultFontName Sans
+skinparam componentStyle rectangle
+skinparam rectangleBorderColor #555555
+skinparam noteBackgroundColor #FFFFE0
+
+package "User space (ring 3, C++17)" as US {
+  component "vaultctl\n(CLI)" as CLI
+  component "kvsim\n(access simulator)" as SIM
+  component "kvsetup\n(test principals)" as SETUP
+
+  package "libkvault (src/client)" as LIB {
+    component "VaultClient\nRAII over the device" as VC
+    component "KeyDeriver\nPBKDF2 (OpenSSL)" as KD
+    component "SecureBuffer\nmlock + volatile wipe" as SB
+    component "SealedStore\ntmp+fsync+rename" as SS
+    component "PolicyLoader\nusers to roles" as PL
+    component "AuditViewer\nstd::thread + poll" as AV
+  }
+}
+
+CLI --> VC
+SIM --> VC
+CLI --> KD
+CLI --> SS
+CLI --> PL
+SIM --> AV
+KD --> SB
+
+node "Sealed vault file\n(ciphertext, nonces, tags, ACLs,\nKDF parameters)" as FILE
+SS --> FILE : 0600
+
+package "Kernel space (ring 0, C)" as KS {
+  component "kv_main\ncdev, 2 minors, sessions,\nioctl dispatch, auto-lock timer" as MAIN
+  component "kv_acl\nREFERENCE MONITOR\ncurrent_uid() -> role -> ACL" as ACL #FFD9D9
+  component "kv_crypto\ngcm(aes) via crypto API,\ncrypto_memneq" as CRYPTO
+  component "kv_store\nhlist hash table" as STORE
+  component "kv_file\nserialise / authenticate" as FILEC
+  component "kv_audit\nring buffer + wait queue" as AUDIT
+  component "kv_proc\n/proc/kvault/{status,stats}" as PROC
+
+  component "Vault state\nkey[32], kcv, salt,\nstate, counters" as STATE #E8E8E8
+}
+
+VC ..> MAIN : "ioctl(/dev/kvault)\nminor 0"
+AV ..> AUDIT : "read + poll\n(/dev/kvault_audit, minor 1)"
+
+MAIN --> ACL : "every operation"
+MAIN --> STORE
+MAIN --> CRYPTO
+MAIN --> AUDIT : "allow AND deny"
+MAIN --> FILEC
+MAIN --> STATE
+ACL --> STATE
+CRYPTO --> STATE : "key never leaves"
+FILEC --> CRYPTO : "authenticate every entry"
+PROC --> STATE : "state and counters only,\nnever names or plaintext"
+
+note right of ACL
+  The subject is current_uid(),
+  read by the kernel from the
+  calling process's credentials.
+  User space cannot forge it.
+end note
+
+note bottom of STATE
+  The master key exists only here.
+  Wiped on seal, auto-lock and
+  module unload (memzero_explicit).
+end note
+
+US -[hidden]down- KS
+@enduml

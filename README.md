@@ -78,7 +78,16 @@ which selects the AES-NI implementation when the CPU has it. Persistence is
 user space's job: `EXPORT` hands out ciphertext, nonces and tags, never
 plaintext and never the key.
 
-Full design, UML and the state machines are in [docs/](docs/).
+Full design, UML and the state machines are in [docs/](docs/):
+
+| | |
+|---|---|
+| [01-introduction.md](docs/01-introduction.md) | The problem, and why the kernel |
+| [02-prd.md](docs/02-prd.md) | Requirements, FR-1…FR-9 and NFR-1…NFR-7 |
+| [03-design.md](docs/03-design.md) | Architecture, threat model, crypto, ABI, trade-offs |
+| [04-uml.md](docs/04-uml.md) | Class, sequence and state diagrams |
+| [05-progress.md](docs/05-progress.md) | Development log and review notes |
+| [06-test-report.md](docs/06-test-report.md) | 90 test cases, benchmarks, defects found |
 
 ## Status
 
@@ -89,4 +98,16 @@ Full design, UML and the state machines are in [docs/](docs/).
 | v0.3 | Design document and UML |
 | v0.4 | Unseal/seal with a constant-time key check, PUT/GET with AES-256-GCM, brute-force lockout, `vaultctl` |
 | v0.5 | RBAC, grant/revoke, auto-lock, lockout, export/import, simulator, test suites |
-| v1.0 | Final report and demo |
+| v1.0 | Documentation complete, fresh-clone build verified |
+
+## Testing
+
+```bash
+make test                      # unit tier; integration and system report as skipped
+sudo make load && make test    # adds the integration tier
+sudo make test                 # all three tiers
+make -C tests bench            # GET throughput and the crypto driver in use
+```
+
+90 cases pass: 25 unit, 19 integration, 4 system, 16 simulator steps and a
+26-check RBAC/persistence session. See [docs/06-test-report.md](docs/06-test-report.md).
