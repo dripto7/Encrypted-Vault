@@ -56,8 +56,9 @@ static int kv_stats_show(struct seq_file *m, void *v)
 	seq_printf(m, "audit_records:    %llu\n", kv_audit_seq());
 	seq_printf(m, "audit_dropped:    %llu\n", kv_audit_dropped_count());
 	seq_printf(m, "audit_ring_size:  %u\n", KV_AUDIT_RING_SIZE);
-	seq_printf(m, "aesni:            %s\n",
-		   kv_crypto_has_aesni() ? "yes" : "no");
+	seq_printf(m, "crypto_driver:    %s\n", kv_crypto_driver_name());
+	seq_printf(m, "accelerated:      %s\n",
+		   kv_crypto_accelerated() ? "yes" : "no");
 	seq_printf(m, "secret_max_bytes: %u\n", KV_SECRET_MAX);
 	return 0;
 }

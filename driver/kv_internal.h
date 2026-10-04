@@ -109,7 +109,8 @@ int  kv_crypto_encrypt(const u8 *key, const u8 *nonce, const u8 *pt, u32 pt_len,
 int  kv_crypto_decrypt(const u8 *key, const u8 *nonce, const u8 *ct, u32 ct_len,
 		       const u8 *tag, u8 *pt);
 int  kv_crypto_kcv(const u8 *key, u8 *kcv_out);
-bool kv_crypto_has_aesni(void);
+bool kv_crypto_accelerated(void);
+const char *kv_crypto_driver_name(void);
 
 /* kv_acl.c */
 u32  kv_role_of(kuid_t uid);

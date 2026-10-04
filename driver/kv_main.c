@@ -145,7 +145,9 @@ static int kv_ioctl_status(struct kv_session *sess, void __user *uarg)
 	st.caller_uid       = from_kuid(&init_user_ns, sess->uid);
 	st.caller_role      = kv_role_of(sess->uid);
 	mutex_unlock(&kv_vault.lock);
-	st.has_aesni = kv_crypto_has_aesni() ? 1 : 0;
+	st.accelerated = kv_crypto_accelerated() ? 1 : 0;
+	strscpy(st.crypto_driver, kv_crypto_driver_name(),
+		sizeof(st.crypto_driver));
 
 	if (copy_to_user(uarg, &st, sizeof(st)))
 		return -EFAULT;
@@ -269,9 +271,9 @@ static int __init kvault_init(void)
 	if (ret)
 		goto err_dev1;
 
-	pr_info("loaded (major %d, aesni=%d, autolock=%us, max_attempts=%u)\n",
-		MAJOR(kv_devt), kv_crypto_has_aesni(), kv_autolock_secs,
-		kv_max_attempts);
+	pr_info("loaded (major %d, crypto=%s accel=%d, autolock=%us, max_attempts=%u)\n",
+		MAJOR(kv_devt), kv_crypto_driver_name(),
+		kv_crypto_accelerated(), kv_autolock_secs, kv_max_attempts);
 	return 0;
 
 err_dev1:

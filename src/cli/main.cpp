@@ -54,7 +54,9 @@ int cmdStatus()
 		  << "auto-lock:        " << st.auto_lock_secs << "s\n"
 		  << "caller:           uid " << st.caller_uid << " ("
 					  << VaultClient::roleName(st.caller_role) << ")\n"
-		  << "AES-NI:           " << (st.has_aesni ? "yes" : "no") << "\n"
+		  << "crypto:           " << st.crypto_driver
+					  << (st.accelerated ? " (hardware-accelerated)"
+							    : " (software)") << "\n"
 		  << "ABI:              " << st.abi_version << "\n";
 	return 0;
 }

@@ -43,6 +43,7 @@
 #define KV_SALT_LEN         16u    /* PBKDF2 salt */
 #define KV_KCV_LEN          32u    /* key-check value */
 #define KV_ROLE_NAME_MAX    32u
+#define KV_DRIVER_NAME_MAX  48u   /* crypto driver name reported in STATUS */
 #define KV_ACL_MAX          16u    /* ACL entries per secret */
 #define KV_LIST_MAX         64u    /* names returned by one LIST call */
 
@@ -152,8 +153,13 @@ struct kv_status_arg {
 	__u64 last_activity_ms;
 	__u32 caller_uid;
 	__u32 caller_role;
-	__u32 has_aesni;
-	__u32 _pad;
+	/* Whether the gcm(aes) implementation the kernel selected is
+	 * hardware-accelerated, and which one it is. The name matters: a CPU
+	 * with both AES-NI and VAES gets "generic-gcm-vaes-avx2" rather than
+	 * any of the aesni drivers, so a check for the string "aesni" reports
+	 * a false negative on exactly the fastest hardware. */
+	__u32 accelerated;
+	char  crypto_driver[KV_DRIVER_NAME_MAX];
 };
 
 /* EXPORT / IMPORT move the sealed blob across the boundary. The kernel never

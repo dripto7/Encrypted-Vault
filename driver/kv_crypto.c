@@ -59,16 +59,39 @@ void kv_crypto_exit(void)
 	kv_aead = NULL;
 }
 
-/* Whether the active gcm(aes) implementation is the hardware-accelerated one.
- * Reported in STATUS and used by the benchmark in the test report. */
-bool kv_crypto_has_aesni(void)
+/* The driver name of the gcm(aes) implementation the kernel selected for us.
+ * Reported in STATUS and in /proc/kvault/stats so the benchmark in the test
+ * report can say which code path it measured. */
+const char *kv_crypto_driver_name(void)
 {
-	const char *drv;
-
 	if (!kv_aead || IS_ERR(kv_aead))
-		return false;
-	drv = crypto_tfm_alg_driver_name(crypto_aead_tfm(kv_aead));
-	return drv && strstr(drv, "aesni") != NULL;
+		return "none";
+	return crypto_tfm_alg_driver_name(crypto_aead_tfm(kv_aead));
+}
+
+/*
+ * Whether that implementation uses the CPU's AES instructions.
+ *
+ * Checking for the substring "aesni" is the obvious test and it is wrong: the
+ * kernel registers several accelerated gcm(aes) drivers and picks by priority,
+ * so a machine with both AES-NI and the wider VAES instructions gets
+ * "generic-gcm-vaes-avx2" (priority 600) ahead of "generic-gcm-aesni-avx"
+ * (500). The fastest hardware would be reported as having no acceleration.
+ *
+ * The prefixes below name the accelerated families; anything else is the
+ * portable C implementation.
+ */
+bool kv_crypto_accelerated(void)
+{
+	static const char * const accel[] = { "aesni", "vaes", "aes-ce",
+					      "ccp", "padlock" };
+	const char *drv = kv_crypto_driver_name();
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(accel); i++)
+		if (strstr(drv, accel[i]))
+			return true;
+	return false;
 }
 
 /* The key-check value lets UNSEAL tell a wrong passphrase from a right one
