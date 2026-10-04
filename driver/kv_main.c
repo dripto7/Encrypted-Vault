@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/capability.h>
+#include <linux/random.h>
 
 #include "kv_internal.h"
 
@@ -59,7 +60,7 @@ static void kv_do_seal(u32 new_state)
 	timer_delete(&kv_vault.autolock_timer);
 }
 
-static void __maybe_unused kv_touch_locked(void)
+static void kv_touch_locked(void)
 {
 	kv_vault.last_activity_ms = kv_now_ms();
 	if (kv_vault.state == KV_STATE_UNSEALED && kv_autolock_secs)
@@ -126,6 +127,313 @@ static __poll_t kv_poll(struct file *filp, struct poll_table_struct *wait)
 	return kv_audit_poll(filp, filp->private_data, wait);
 }
 
+/* --- request validation ------------------------------------------------ */
+
+/*
+ * A name arriving from user space is untrusted in three ways: it may not be
+ * terminated, it may be empty, and it may contain characters that would make
+ * audit output ambiguous. All three are rejected here, once, before any name
+ * reaches the store or the log.
+ */
+static int kv_check_name(char *name)
+{
+	size_t len;
+	size_t i;
+
+	/* Force termination rather than trusting the caller to have done it:
+	 * everything downstream treats this as a C string. */
+	name[KV_NAME_MAX - 1] = '\0';
+	len = strnlen(name, KV_NAME_MAX);
+	if (len == 0 || len >= KV_NAME_MAX)
+		return -EINVAL;
+
+	for (i = 0; i < len; i++) {
+		const char c = name[i];
+
+		if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+		    !(c >= '0' && c <= '9') && c != '_' && c != '-' && c != '.')
+			return -EINVAL;
+	}
+	return 0;
+}
+
+/* Must hold the lock. Resolves the lockout deadline before anything else looks
+ * at the state, so an expired lockout does not keep the vault shut. */
+static void kv_expire_lockout(void)
+{
+	if (kv_vault.state == KV_STATE_LOCKED_OUT &&
+	    kv_now_ms() >= kv_vault.lockout_until_ms) {
+		kv_vault.state = KV_STATE_SEALED;
+		kv_vault.failed_attempts = 0;
+		kv_vault.lockout_until_ms = 0;
+	}
+}
+
+/* --- vault lifecycle --------------------------------------------------- */
+
+static int kv_ioctl_unseal(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_unseal_arg *arg;
+	int ret;
+
+	/* Unsealing is administrative: it is the operation that makes every
+	 * other operation possible. */
+	if (!kv_is_admin(sess->uid)) {
+		kv_audit_log(sess->uid, sess->pid, KV_OP_UNSEAL, "",
+			     KV_RESULT_DENY, -EACCES);
+		return -EACCES;
+	}
+
+	arg = kzalloc(sizeof(*arg), GFP_KERNEL);
+	if (!arg)
+		return -ENOMEM;
+
+	if (copy_from_user(arg, uarg, sizeof(*arg))) {
+		ret = -EFAULT;
+		goto out;
+	}
+	if (arg->abi_version != KV_ABI_VERSION || arg->kdf_iterations == 0) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	mutex_lock(&kv_vault.lock);
+	kv_expire_lockout();
+
+	if (kv_vault.state == KV_STATE_LOCKED_OUT) {
+		/* Refused without the key-check being performed at all: a
+		 * locked-out attacker learns nothing about the passphrase, not
+		 * even how long checking it took. */
+		ret = -EAGAIN;
+		goto unlock;
+	}
+	if (kv_vault.state == KV_STATE_UNSEALED) {
+		ret = -EALREADY;
+		goto unlock;
+	}
+
+	if (!kv_vault.kcv_present) {
+		/* First unseal of an empty vault: adopt this passphrase. There
+		 * is nothing to check it against, and refusing would leave the
+		 * vault permanently unusable. */
+		ret = kv_crypto_kcv(arg->key, kv_vault.kcv);
+		if (ret)
+			goto unlock;
+		kv_vault.kcv_present = true;
+		memcpy(kv_vault.salt, arg->salt, KV_SALT_LEN);
+		kv_vault.kdf_iterations = arg->kdf_iterations;
+		pr_info("vault initialized by uid %u\n",
+			from_kuid(&init_user_ns, sess->uid));
+	} else if (!kv_crypto_kcv_matches(arg->key, kv_vault.kcv)) {
+		kv_vault.failed_attempts++;
+		if (kv_vault.failed_attempts >= kv_max_attempts) {
+			kv_vault.state = KV_STATE_LOCKED_OUT;
+			kv_vault.lockout_until_ms =
+				kv_now_ms() + (u64)kv_lockout_secs * 1000;
+			kv_audit_log(sess->uid, sess->pid, KV_OP_LOCKOUT, "",
+				     KV_RESULT_DENY, -EAGAIN);
+			pr_warn("locked out after %u failed unseal attempts\n",
+				kv_vault.failed_attempts);
+		}
+		kv_audit_log(sess->uid, sess->pid, KV_OP_UNSEAL, "",
+			     KV_RESULT_DENY, -EACCES);
+		ret = -EACCES;
+		goto unlock;
+	}
+
+	memcpy(kv_vault.key, arg->key, KV_KEY_LEN);
+	kv_vault.key_present = true;
+	kv_vault.state = KV_STATE_UNSEALED;
+	kv_vault.failed_attempts = 0;
+	kv_touch_locked();
+	kv_audit_log(sess->uid, sess->pid, KV_OP_UNSEAL, "",
+		     KV_RESULT_ALLOW, 0);
+	ret = 0;
+
+unlock:
+	mutex_unlock(&kv_vault.lock);
+out:
+	/* The caller's key is gone from kernel memory whichever way this went:
+	 * a rejected key is as worth wiping as an accepted one. */
+	kfree_sensitive(arg);
+	return ret;
+}
+
+static int kv_ioctl_seal(struct kv_session *sess)
+{
+	if (!kv_is_admin(sess->uid)) {
+		kv_audit_log(sess->uid, sess->pid, KV_OP_SEAL, "",
+			     KV_RESULT_DENY, -EACCES);
+		return -EACCES;
+	}
+
+	mutex_lock(&kv_vault.lock);
+	kv_do_seal(KV_STATE_SEALED);
+	kv_audit_log(sess->uid, sess->pid, KV_OP_SEAL, "", KV_RESULT_ALLOW, 0);
+	mutex_unlock(&kv_vault.lock);
+	return 0;
+}
+
+/* --- secrets ----------------------------------------------------------- */
+
+static int kv_ioctl_put(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_secret_arg *arg;
+	struct kv_secret *s;
+	u8 *ct = NULL;
+	u8 nonce[KV_NONCE_LEN];
+	u8 tag[KV_TAG_LEN];
+	bool created = false;
+	int ret;
+
+	/* 4 KiB of payload has no business on the kernel stack. */
+	arg = kzalloc(sizeof(*arg), GFP_KERNEL);
+	if (!arg)
+		return -ENOMEM;
+
+	if (copy_from_user(arg, uarg, sizeof(*arg))) {
+		ret = -EFAULT;
+		goto out_free;
+	}
+	ret = kv_check_name(arg->name);
+	if (ret)
+		goto out_free;
+	if (arg->len == 0 || arg->len > KV_SECRET_MAX) {
+		ret = -EINVAL;
+		goto out_free;
+	}
+
+	mutex_lock(&kv_vault.lock);
+	if (kv_vault.state != KV_STATE_UNSEALED) {
+		ret = -EPERM;
+		goto out_audit;
+	}
+
+	s = kv_store_find(arg->name);
+	if (s && !kv_acl_check(s, sess->uid, KV_PERM_WRITE)) {
+		ret = -EACCES;
+		goto out_audit;
+	}
+
+	/* A fresh nonce on every write. Reusing a nonce under the same key
+	 * breaks GCM outright - it leaks the XOR of the two plaintexts and the
+	 * authentication key - so this is generated, never derived from a
+	 * counter that a restore from backup could rewind. */
+	get_random_bytes(nonce, sizeof(nonce));
+
+	ct = kzalloc(arg->len, GFP_KERNEL);
+	if (!ct) {
+		ret = -ENOMEM;
+		goto out_audit;
+	}
+
+	ret = kv_crypto_encrypt(kv_vault.key, nonce,
+				(const u8 *)arg->name, KV_NAME_MAX,
+				arg->data, arg->len, ct, tag);
+	if (ret)
+		goto out_audit;
+
+	if (!s) {
+		s = kv_store_insert(arg->name, sess->uid);
+		if (!s) {
+			ret = -ENOMEM;
+			goto out_audit;
+		}
+		created = true;
+	}
+
+	/* Only now, with the new ciphertext in hand, is the old one discarded:
+	 * a failure above leaves the existing secret intact. */
+	kfree_sensitive(s->ct);
+	s->ct = ct;
+	ct = NULL;
+	s->ct_len = arg->len;
+	memcpy(s->nonce, nonce, sizeof(s->nonce));
+	memcpy(s->tag, tag, sizeof(s->tag));
+	s->modified_ms = kv_now_ms();
+	if (!created)
+		s->version++;
+
+	kv_touch_locked();
+	ret = 0;
+
+out_audit:
+	kv_audit_log(sess->uid, sess->pid, KV_OP_PUT, arg->name,
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	mutex_unlock(&kv_vault.lock);
+	kfree_sensitive(ct);
+out_free:
+	/* The plaintext the caller handed us does not outlive the call. */
+	kfree_sensitive(arg);
+	return ret;
+}
+
+static int kv_ioctl_get(struct kv_session *sess, void __user *uarg)
+{
+	struct kv_secret_arg *arg;
+	struct kv_secret *s;
+	int ret;
+
+	arg = kzalloc(sizeof(*arg), GFP_KERNEL);
+	if (!arg)
+		return -ENOMEM;
+
+	if (copy_from_user(arg, uarg, sizeof(*arg))) {
+		ret = -EFAULT;
+		goto out_free;
+	}
+	ret = kv_check_name(arg->name);
+	if (ret)
+		goto out_free;
+
+	mutex_lock(&kv_vault.lock);
+	if (kv_vault.state != KV_STATE_UNSEALED) {
+		ret = -EPERM;
+		goto out_audit;
+	}
+
+	s = kv_store_find(arg->name);
+	if (!s) {
+		ret = -ENOENT;
+		goto out_audit;
+	}
+
+	/* The reference monitor. Everything above this point is parsing;
+	 * everything below it has been authorised. */
+	if (!kv_acl_check(s, sess->uid, KV_PERM_READ)) {
+		ret = -EACCES;
+		goto out_audit;
+	}
+	if (s->ct_len > arg->len) {
+		ret = -ENOSPC;
+		goto out_audit;
+	}
+
+	ret = kv_crypto_decrypt(kv_vault.key, s->nonce,
+				(const u8 *)s->name, KV_NAME_MAX,
+				s->ct, s->ct_len, s->tag, arg->data);
+	if (ret)
+		goto out_audit;
+
+	arg->len = s->ct_len;
+	kv_touch_locked();
+
+out_audit:
+	kv_audit_log(sess->uid, sess->pid, KV_OP_GET, arg->name,
+		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
+	mutex_unlock(&kv_vault.lock);
+
+	/* A denied or failed GET copies nothing back - not even the zeroed
+	 * buffer - so there is no path where a caller receives a partial
+	 * result and has to decide whether to trust it. */
+	if (!ret && copy_to_user(uarg, arg, sizeof(*arg)))
+		ret = -EFAULT;
+
+out_free:
+	kfree_sensitive(arg);
+	return ret;
+}
+
 /* STATUS is deliberately readable by anyone: it reports lifecycle state and
  * counters only, never names, plaintext or key material. */
 static int kv_ioctl_status(struct kv_session *sess, void __user *uarg)
@@ -134,6 +442,7 @@ static int kv_ioctl_status(struct kv_session *sess, void __user *uarg)
 
 	memset(&st, 0, sizeof(st));
 	mutex_lock(&kv_vault.lock);
+	kv_expire_lockout();
 	st.abi_version      = KV_ABI_VERSION;
 	st.state            = kv_vault.state;
 	st.secret_count     = kv_vault.secret_count;
@@ -144,6 +453,9 @@ static int kv_ioctl_status(struct kv_session *sess, void __user *uarg)
 	st.last_activity_ms = kv_vault.last_activity_ms;
 	st.caller_uid       = from_kuid(&init_user_ns, sess->uid);
 	st.caller_role      = kv_role_of(sess->uid);
+	st.initialized      = kv_vault.kcv_present ? 1 : 0;
+	st.kdf_iterations   = kv_vault.kdf_iterations;
+	memcpy(st.salt, kv_vault.salt, KV_SALT_LEN);
 	mutex_unlock(&kv_vault.lock);
 	st.accelerated = kv_crypto_accelerated() ? 1 : 0;
 	strscpy(st.crypto_driver, kv_crypto_driver_name(),
@@ -172,9 +484,17 @@ static long kv_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		ret = kv_ioctl_status(sess, uarg);
 		break;
 	case KVAULT_UNSEAL:
+		ret = kv_ioctl_unseal(sess, uarg);
+		break;
 	case KVAULT_SEAL:
+		ret = kv_ioctl_seal(sess);
+		break;
 	case KVAULT_PUT:
+		ret = kv_ioctl_put(sess, uarg);
+		break;
 	case KVAULT_GET:
+		ret = kv_ioctl_get(sess, uarg);
+		break;
 	case KVAULT_DELETE:
 	case KVAULT_LIST:
 	case KVAULT_ROTATE:

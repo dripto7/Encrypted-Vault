@@ -37,7 +37,7 @@ uid_t lookupUid(const std::string &user)
 	const struct passwd *pw = ::getpwnam(user.c_str());
 	if (!pw) {
 		std::cerr << "kvsim: no such user '" << user
-			  << "' - run scripts/setup-users.sh first\n";
+			  << "' - run build/bin/kvsetup first\n";
 		std::exit(2);
 	}
 	return pw->pw_uid;

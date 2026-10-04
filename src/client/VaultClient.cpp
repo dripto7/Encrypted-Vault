@@ -63,10 +63,13 @@ kv_status_arg VaultClient::status() const
 	return st;
 }
 
-void VaultClient::unseal(const MasterKey &key) const
+void VaultClient::unseal(const MasterKey &key, const Salt &salt,
+			 unsigned iterations) const
 {
 	kv_unseal_arg arg{};
-	arg.abi_version = KV_ABI_VERSION;
+	arg.abi_version    = KV_ABI_VERSION;
+	arg.kdf_iterations = iterations;
+	std::memcpy(arg.salt, salt.data(), KV_SALT_LEN);
 	std::memcpy(arg.key, key.data(), KV_KEY_LEN);
 	try {
 		callIoctl(KVAULT_UNSEAL, &arg, "KVAULT_UNSEAL");

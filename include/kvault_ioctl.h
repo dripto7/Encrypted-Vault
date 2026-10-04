@@ -96,11 +96,21 @@
 
 /* --- ioctl payloads ---------------------------------------------------- */
 
-/* UNSEAL: user space derives the key with PBKDF2 and hands it over once. */
+/*
+ * UNSEAL: user space derives the key with PBKDF2 and hands it over once.
+ *
+ * The KDF parameters travel with the key because the kernel is the one thing
+ * that outlives any single vaultctl invocation: on the first unseal of an
+ * empty vault it records @salt and @kdf_iterations, and STATUS hands them back
+ * so a later unseal derives the same key from the same passphrase. The salt is
+ * not secret - its job is to make one precomputed table useless against many
+ * vaults, not to stay hidden.
+ */
 struct kv_unseal_arg {
 	__u8  key[KV_KEY_LEN];
+	__u8  salt[KV_SALT_LEN];
+	__u32 kdf_iterations;
 	__u32 abi_version;
-	__u32 _pad;
 };
 
 /* PUT / GET: @data is plaintext in both directions. On GET the caller sets
@@ -160,6 +170,13 @@ struct kv_status_arg {
 	 * a false negative on exactly the fastest hardware. */
 	__u32 accelerated;
 	char  crypto_driver[KV_DRIVER_NAME_MAX];
+	/* @initialized is 0 before the first ever unseal, when the vault has no
+	 * key-check value to compare against. User space needs to know the
+	 * difference: an empty vault accepts the passphrase it is given and
+	 * adopts it, an initialized one checks. */
+	__u32 initialized;
+	__u32 kdf_iterations;
+	__u8  salt[KV_SALT_LEN];
 };
 
 /* EXPORT / IMPORT move the sealed blob across the boundary. The kernel never

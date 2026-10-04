@@ -14,9 +14,12 @@
 #include <string>
 #include <vector>
 
+#include <openssl/crypto.h>
+
 #include <poll.h>
 #include <unistd.h>
 
+#include "client/Passphrase.hpp"
 #include "client/VaultClient.hpp"
 
 using namespace kvault;
@@ -58,6 +61,117 @@ int cmdStatus()
 					  << (st.accelerated ? " (hardware-accelerated)"
 							    : " (software)") << "\n"
 		  << "ABI:              " << st.abi_version << "\n";
+	return 0;
+}
+
+/*
+ * Unseal.
+ *
+ * The salt and iteration count are the kernel's, not the CLI's: on an
+ * initialized vault STATUS hands them back so the same passphrase derives the
+ * same key, and only an uninitialized vault generates fresh ones. Keeping that
+ * decision on the kernel side means two different user-space tools cannot
+ * disagree about which salt belongs to this vault.
+ */
+int cmdUnseal()
+{
+	VaultClient c;
+	const kv_status_arg st = c.status();
+
+	Salt salt{};
+	unsigned iterations;
+	std::string pass;
+
+	if (st.initialized) {
+		std::memcpy(salt.data(), st.salt, salt.size());
+		iterations = st.kdf_iterations;
+		pass = Passphrase::read("Passphrase: ");
+	} else {
+		std::cout << "Vault is uninitialized; this passphrase will "
+			     "become the vault's.\n";
+		salt = KeyDeriver::randomSalt();
+		iterations = KeyDeriver::kDefaultIterations;
+		pass = Passphrase::readConfirmed("New passphrase: ");
+	}
+
+	MasterKey key;
+	if (!key.locked())
+		std::cerr << "vaultctl: warning: could not mlock the key buffer; "
+			     "it may be swapped to disk\n";
+
+	try {
+		KeyDeriver::derive(pass, salt, iterations, key);
+	} catch (...) {
+		OPENSSL_cleanse(pass.data(), pass.size());
+		throw;
+	}
+	/* The passphrase has done its job. Everything after this point works
+	 * from the derived key, and the key itself is wiped by ~MasterKey. */
+	OPENSSL_cleanse(pass.data(), pass.size());
+
+	c.unseal(key, salt, iterations);
+
+	const kv_status_arg after = c.status();
+	std::cout << "unsealed (" << after.secret_count << " secrets, "
+		  << "auto-lock in " << after.auto_lock_secs << "s)\n";
+	return 0;
+}
+
+int cmdSeal()
+{
+	VaultClient c;
+	c.seal();
+	std::cout << "sealed; key wiped from kernel memory\n";
+	return 0;
+}
+
+/* Reads the secret from stdin so it never appears in the process's argv, where
+ * any user on the system could read it out of /proc/<pid>/cmdline. */
+int cmdPut(const std::string &name)
+{
+	std::vector<std::uint8_t> value;
+	char buf[1024];
+
+	/* read() sets failbit at EOF even when it delivered bytes, so the loop
+	 * is driven by gcount() rather than by the stream's state. */
+	for (;;) {
+		std::cin.read(buf, sizeof(buf));
+		const std::streamsize n = std::cin.gcount();
+		if (n <= 0)
+			break;
+		value.insert(value.end(), buf, buf + n);
+		if (value.size() > KV_SECRET_MAX) {
+			std::cerr << "vaultctl: secret exceeds "
+				  << KV_SECRET_MAX << " bytes\n";
+			return 1;
+		}
+	}
+
+	/* A trailing newline from `echo` is almost never part of the secret. */
+	while (!value.empty() && value.back() == '\n')
+		value.pop_back();
+
+	if (value.empty()) {
+		std::cerr << "vaultctl: refusing to store an empty secret\n";
+		return 1;
+	}
+
+	VaultClient c;
+	c.put(name, value);
+	OPENSSL_cleanse(value.data(), value.size());
+	std::cout << "stored " << name << "\n";
+	return 0;
+}
+
+int cmdGet(const std::string &name)
+{
+	VaultClient c;
+	std::vector<std::uint8_t> value = c.get(name);
+
+	std::cout.write(reinterpret_cast<const char *>(value.data()),
+			static_cast<std::streamsize>(value.size()));
+	std::cout << "\n" << std::flush;
+	OPENSSL_cleanse(value.data(), value.size());
 	return 0;
 }
 
@@ -103,10 +217,35 @@ int main(int argc, char **argv)
 			return cmdStatus();
 		if (cmd == "watch")
 			return cmdWatch();
+		if (cmd == "unseal")
+			return cmdUnseal();
+		if (cmd == "seal")
+			return cmdSeal();
+		if (cmd == "put" && argc == 3)
+			return cmdPut(argv[2]);
+		if (cmd == "get" && argc == 3)
+			return cmdGet(argv[2]);
 
-		std::cerr << "vaultctl: '" << cmd
-			  << "' is not implemented yet (driver milestone v0.4)\n";
-		return 3;
+		/* The remaining verbs reach the driver, which answers ENOSYS
+		 * until the v0.5 milestone. Letting them through means the
+		 * error the user sees is the kernel's, not a guess. */
+		{
+			VaultClient c;
+			if (cmd == "list") {
+				for (const std::string &n : c.list())
+					std::cout << n << "\n";
+				return 0;
+			}
+			if (cmd == "del" && argc == 3) {
+				c.remove(argv[2]);
+				return 0;
+			}
+			if (cmd == "rotate" && argc == 3) {
+				c.rotate(argv[2]);
+				return 0;
+			}
+		}
+		return usage(argv[0]);
 	} catch (const VaultError &e) {
 		std::cerr << "vaultctl: " << e.what() << "\n";
 		return 1;

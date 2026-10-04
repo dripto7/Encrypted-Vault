@@ -104,11 +104,14 @@ void kv_store_clear(void);
 /* kv_crypto.c */
 int  kv_crypto_init(void);
 void kv_crypto_exit(void);
-int  kv_crypto_encrypt(const u8 *key, const u8 *nonce, const u8 *pt, u32 pt_len,
-		       u8 *ct, u8 *tag);
-int  kv_crypto_decrypt(const u8 *key, const u8 *nonce, const u8 *ct, u32 ct_len,
-		       const u8 *tag, u8 *pt);
+int  kv_crypto_encrypt(const u8 *key, const u8 *nonce,
+		       const u8 *aad, u32 aad_len,
+		       const u8 *pt, u32 pt_len, u8 *ct, u8 *tag);
+int  kv_crypto_decrypt(const u8 *key, const u8 *nonce,
+		       const u8 *aad, u32 aad_len,
+		       const u8 *ct, u32 ct_len, const u8 *tag, u8 *pt);
 int  kv_crypto_kcv(const u8 *key, u8 *kcv_out);
+bool kv_crypto_kcv_matches(const u8 *key, const u8 *stored_kcv);
 bool kv_crypto_accelerated(void);
 const char *kv_crypto_driver_name(void);
 

@@ -47,7 +47,8 @@ public:
 
 	/* Hands the derived key to the kernel once. The caller's copy should be
 	 * wiped immediately afterwards; unseal() does not take ownership. */
-	void unseal(const MasterKey &key) const;
+	void unseal(const MasterKey &key, const Salt &salt,
+		    unsigned iterations) const;
 	void seal() const;
 
 	void put(const std::string &name, const std::vector<std::uint8_t> &plaintext) const;

@@ -24,9 +24,11 @@ BIN       := $(BUILD)/bin
 CLIENT_SRC := $(wildcard src/client/*.cpp)
 CLI_SRC    := $(wildcard src/cli/*.cpp)
 SIM_SRC    := $(wildcard src/sim/*.cpp)
+TOOLS_SRC  := $(wildcard src/tools/*.cpp)
 CLIENT_OBJ := $(CLIENT_SRC:%.cpp=$(BUILD)/%.o)
 CLI_OBJ    := $(CLI_SRC:%.cpp=$(BUILD)/%.o)
 SIM_OBJ    := $(SIM_SRC:%.cpp=$(BUILD)/%.o)
+TOOLS_OBJ  := $(TOOLS_SRC:%.cpp=$(BUILD)/%.o)
 
 .PHONY: all driver user clean load unload test lint
 
@@ -35,7 +37,7 @@ all: driver user
 driver:
 	$(MAKE) -C $(KDIR) M=$(PWD)/driver modules
 
-user: $(BIN)/vaultctl $(BIN)/kvsim
+user: $(BIN)/vaultctl $(BIN)/kvsim $(BIN)/kvsetup
 
 $(BIN)/vaultctl: $(CLIENT_OBJ) $(CLI_OBJ)
 	@mkdir -p $(dir $@)
@@ -44,6 +46,11 @@ $(BIN)/vaultctl: $(CLIENT_OBJ) $(CLI_OBJ)
 $(BIN)/kvsim: $(CLIENT_OBJ) $(SIM_OBJ)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
+
+# kvsetup links nothing from the client: it only creates accounts.
+$(BIN)/kvsetup: $(TOOLS_OBJ)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $^ -o $@
 
 $(BUILD)/%.o: %.cpp
 	@mkdir -p $(dir $@)

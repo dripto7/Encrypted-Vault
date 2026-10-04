@@ -50,10 +50,19 @@ build/bin/vaultctl status
 sudo make unload               # rmmod — the key is wiped on the way out
 ```
 
+A session end to end:
+
+```bash
+sudo build/bin/vaultctl unseal            # first unseal adopts the passphrase
+printf 's3cr3t' | sudo build/bin/vaultctl put db_password
+sudo build/bin/vaultctl get db_password
+sudo build/bin/vaultctl seal              # key wiped from kernel memory
+```
+
 For the multi-user simulation, create the test principals first:
 
 ```bash
-sudo scripts/setup-users.sh
+sudo build/bin/kvsetup
 sudo build/bin/kvsim
 ```
 
@@ -78,6 +87,6 @@ Full design, UML and the state machines are in [docs/](docs/).
 | v0.1 | Repo, ABI header, char device with two minors, sessions, STATUS, audit ring with poll, procfs, user-space client and CLI skeleton |
 | v0.2 | Product requirements |
 | v0.3 | Design document and UML |
-| v0.4 | Unseal/seal, PUT/GET with AES-GCM, working `vaultctl` |
+| v0.4 | Unseal/seal with a constant-time key check, PUT/GET with AES-256-GCM, brute-force lockout, `vaultctl` |
 | v0.5 | RBAC, grant/revoke, auto-lock, lockout, export/import, simulator, test suites |
 | v1.0 | Final report and demo |

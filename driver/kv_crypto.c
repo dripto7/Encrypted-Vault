@@ -17,6 +17,8 @@
 #include <linux/string.h>
 #include <crypto/aead.h>
 #include <crypto/hash.h>
+#include <crypto/algapi.h>
+#include <linux/scatterlist.h>
 
 #include "kv_internal.h"
 
@@ -111,15 +113,120 @@ int kv_crypto_kcv(const u8 *key, u8 *kcv_out)
 	return ret;
 }
 
-int kv_crypto_encrypt(const u8 *key, const u8 *nonce, const u8 *pt, u32 pt_len,
-		      u8 *ct, u8 *tag)
+/*
+ * One GCM operation.
+ *
+ * The kernel AEAD interface works on scatterlists and expects a single
+ * contiguous layout of [ associated data | payload | tag ], with the tag
+ * trailing the ciphertext. Rather than scatter-gather across the caller's
+ * separate buffers, this builds that layout once in a scratch allocation and
+ * copies the pieces out afterwards: the buffers involved are at most 4 KiB, so
+ * the copy is cheaper than getting the sg bookkeeping subtly wrong, and the
+ * scratch can be wiped in one place on every exit path.
+ *
+ * @aad is the secret's name. Authenticating it binds each ciphertext to the
+ * entry it belongs to, so an attacker who can edit the vault file cannot move
+ * one secret's ciphertext under another secret's name: the tag check fails
+ * because the name is part of what was authenticated.
+ *
+ * Callers must hold kv_vault.lock. The tfm is shared and setkey writes to it,
+ * so two concurrent operations would race on the key.
+ */
+static int kv_gcm(const u8 *key, const u8 *nonce,
+		  const u8 *aad, u32 aad_len,
+		  const u8 *in, u32 in_len,
+		  u8 *out, u8 *tag, bool encrypt)
 {
-	/* Filled in at the v0.4 milestone (PUT/GET with AES-GCM). */
-	return -ENOSYS;
+	struct aead_request *req;
+	struct scatterlist sg;
+	DECLARE_CRYPTO_WAIT(wait);
+	u8 *scratch;
+	u32 scratch_len;
+	u8 iv[KV_NONCE_LEN];
+	int ret;
+
+	if (!kv_aead || IS_ERR(kv_aead))
+		return -ENODEV;
+
+	scratch_len = aad_len + in_len + KV_TAG_LEN;
+	scratch = kzalloc(scratch_len, GFP_KERNEL);
+	if (!scratch)
+		return -ENOMEM;
+
+	req = aead_request_alloc(kv_aead, GFP_KERNEL);
+	if (!req) {
+		kfree_sensitive(scratch);
+		return -ENOMEM;
+	}
+
+	ret = crypto_aead_setkey(kv_aead, key, KV_KEY_LEN);
+	if (ret)
+		goto out;
+
+	memcpy(scratch, aad, aad_len);
+	memcpy(scratch + aad_len, in, in_len);
+	if (!encrypt)
+		/* Decrypt reads the tag from the end of the payload. */
+		memcpy(scratch + aad_len + in_len, tag, KV_TAG_LEN);
+
+	/* The IV must be a copy: the AEAD code may write to the iv buffer, and
+	 * the caller's nonce is stored state we must not disturb. */
+	memcpy(iv, nonce, sizeof(iv));
+
+	sg_init_one(&sg, scratch, scratch_len);
+	aead_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
+				  crypto_req_done, &wait);
+	aead_request_set_ad(req, aad_len);
+	aead_request_set_crypt(req, &sg, &sg,
+			       encrypt ? in_len : in_len + KV_TAG_LEN, iv);
+
+	if (encrypt)
+		ret = crypto_wait_req(crypto_aead_encrypt(req), &wait);
+	else
+		ret = crypto_wait_req(crypto_aead_decrypt(req), &wait);
+	if (ret)
+		/* -EBADMSG here is the tamper detection working: either the
+		 * ciphertext, the tag or the name was altered. */
+		goto out;
+
+	memcpy(out, scratch + aad_len, in_len);
+	if (encrypt)
+		memcpy(tag, scratch + aad_len + in_len, KV_TAG_LEN);
+
+out:
+	memzero_explicit(iv, sizeof(iv));
+	aead_request_free(req);
+	kfree_sensitive(scratch);
+	return ret;
 }
 
-int kv_crypto_decrypt(const u8 *key, const u8 *nonce, const u8 *ct, u32 ct_len,
-		      const u8 *tag, u8 *pt)
+int kv_crypto_encrypt(const u8 *key, const u8 *nonce,
+		      const u8 *aad, u32 aad_len,
+		      const u8 *pt, u32 pt_len, u8 *ct, u8 *tag)
 {
-	return -ENOSYS;
+	return kv_gcm(key, nonce, aad, aad_len, pt, pt_len, ct, tag, true);
+}
+
+int kv_crypto_decrypt(const u8 *key, const u8 *nonce,
+		      const u8 *aad, u32 aad_len,
+		      const u8 *ct, u32 ct_len, const u8 *tag, u8 *pt)
+{
+	return kv_gcm(key, nonce, aad, aad_len, ct, ct_len, pt, (u8 *)tag,
+		      false);
+}
+
+/* Constant-time comparison of a presented key against the stored key-check
+ * value. memcmp would return as soon as it found a differing byte, which leaks
+ * how many leading bytes were right - enough, over many attempts, to recover
+ * the value a byte at a time. crypto_memneq always reads both buffers whole. */
+bool kv_crypto_kcv_matches(const u8 *key, const u8 *stored_kcv)
+{
+	u8 kcv[KV_KCV_LEN];
+	bool match;
+
+	if (kv_crypto_kcv(key, kcv))
+		return false;
+	match = !crypto_memneq(kcv, stored_kcv, KV_KCV_LEN);
+	memzero_explicit(kcv, sizeof(kcv));
+	return match;
 }
