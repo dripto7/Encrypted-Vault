@@ -1,21 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * kvsetup - create the system users the simulator drives.
- *
- * This replaces what would naturally be a shell script, because the project is
- * C and C++ only. The work is the same either way: check whether an account
- * exists, and if not, run useradd.
- *
- * Doing it in C++ makes the process handling explicit rather than implicit in
- * the shell - fork, execvp in the child, waitpid and the exit-status decoding
- * in the parent - and it is a vector for an argument injection if the names
- * ever stop being compile-time constants, which is why the validation below
- * exists even though today's input is a fixed list.
- *
- * Writing to /etc/passwd directly would avoid the exec entirely, but useradd
- * holds the right locks, updates the shadow file and picks a free UID; doing
- * that by hand to avoid one fork would be a worse program.
- */
+/* kvsetup - create the system users the simulator drives. */
 #include <grp.h>
 #include <pwd.h>
 #include <sys/wait.h>
@@ -33,19 +17,6 @@ const std::array<const char *, 4> kUsers = {
     "kv_alice", "kv_bob", "kv_eve", "kv_carol"
 };
 
-/*
- * Two groups, because the device has two minors with different audiences.
- *
- * kvault  - may open /dev/kvault and issue commands. Membership is not
- *           authorisation: the kernel still decides every operation. It only
- *           means "allowed to ask".
- * kvaudit - may read /dev/kvault_audit and nothing else.
- *
- * kv_carol is deliberately in kvaudit only. An auditor who cannot even open
- * the control device is a stronger statement than one who opens it and is
- * refused, and it is the file-permission layer doing the work rather than the
- * reference monitor - defence in depth, visible in the simulation output.
- */
 struct GroupSpec {
 	const char *group;
 	std::array<const char *, 3> members;   /* nullptr-terminated */
@@ -74,15 +45,6 @@ bool validName(const std::string &name)
 	return true;
 }
 
-/*
- * Runs @prog with @args. Returns the child's exit status, or -1 if the child
- * could not be started or did not exit normally.
- *
- * argv is built from a vector of std::string rather than assembled into one
- * command line, because there is no shell here to re-split it: each element
- * arrives at the program as exactly one argument, so a name containing a space
- * cannot become two.
- */
 int runTool(const std::string &prog, const std::vector<std::string> &args)
 {
 	const pid_t pid = ::fork();

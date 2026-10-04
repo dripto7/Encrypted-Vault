@@ -116,7 +116,7 @@ should happen.
 
 ### NFR-1 — No plaintext at rest
 
-No file KVault writes, and no file it causes to be written, contains a secret
+No file Encrypted Vault writes, and no file it causes to be written, contains a secret
 in the clear. Verified by scanning the vault file for known plaintext after a
 full session.
 

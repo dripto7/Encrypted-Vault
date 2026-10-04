@@ -53,13 +53,13 @@ read every world-readable file, and read the vault file if permissions allow.
 
 - **Root.** Root can load a module, read `/dev/kmem` where configured, patch
   the running kernel, or simply `rmmod` and substitute its own. Any claim to
-  resist a hostile administrator would be false. KVault raises the bar from
+  resist a hostile administrator would be false. Encrypted Vault raises the bar from
   "any process of the same user" to "ring 0", which is the honest claim.
 - **A weak passphrase.** 200 000 PBKDF2 iterations make an offline attack on an
   exported vault expensive, not impossible. A four-character passphrase is
   recoverable and no amount of design fixes that.
 - **Side channels beyond comparison timing.** Cache-timing attacks against the
-  AES implementation are the crypto driver's problem; KVault uses the kernel's
+  AES implementation are the crypto driver's problem; Encrypted Vault uses the kernel's
   and inherits whatever hardening it has.
 - **Denial of service by an authorised principal.** A developer who may create
   secrets may create 1024 of them. The bound limits the damage; it does not

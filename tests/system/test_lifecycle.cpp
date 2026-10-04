@@ -2,9 +2,6 @@
 /*
  * System tests: concurrency under the vault mutex, the auto-lock timer, and
  * what survives a module reload.
- *
- * Needs root and an unsealed vault. These cases change global vault state - the
- * last one deliberately leaves it auto-locked - so they run last and say so.
  */
 #include <sys/wait.h>
 #include <unistd.h>
@@ -55,14 +52,6 @@ std::string readParam(const char *path)
 
 } // namespace
 
-/*
- * Many processes reading at once.
- *
- * Every operation serialises on one mutex, so the interesting question is not
- * throughput but whether the plaintext each reader gets back is its own. A
- * shared scratch buffer or a tfm whose key one thread overwrites while another
- * is using it would show up here as a wrong or empty value.
- */
 KV_TEST(concurrent_readers_all_get_the_right_plaintext)
 {
 	if (!ready()) {
@@ -163,16 +152,6 @@ KV_TEST(concurrent_writers_do_not_corrupt_the_store)
 	KV_CHECK_EQ(errors.load(), 0);
 }
 
-/*
- * The auto-lock timer.
- *
- * Driven by writing the module parameter rather than by reloading the module, so
- * the test does not need the passphrase: the timer is re-armed from the current
- * parameter value on the next operation, so shortening it and then touching the
- * vault schedules a lock a couple of seconds out.
- *
- * This and the case after it both leave the vault locked, so they come last.
- */
 KV_TEST(the_vault_locks_itself_when_idle)
 {
 	if (!ready()) {
@@ -209,18 +188,6 @@ KV_TEST(the_vault_locks_itself_when_idle)
 	writeParam(kParamPath, saved);
 }
 
-/*
- * A locked vault refuses everything.
- *
- * Deliberately a separate case that runs after the auto-lock one, rather than
- * sealing the vault itself. Any case that seals leaves every later case with
- * nothing to work on, so there is exactly one transition to the locked state in
- * this suite and this case observes the result of it.
- *
- * The explicit SEAL ioctl is exercised in the session log instead
- * (docs/v05-session.log), where the passphrase is known and the vault can be
- * unsealed again afterwards.
- */
 KV_TEST(a_locked_vault_denies_every_operation)
 {
 	VaultClient c;

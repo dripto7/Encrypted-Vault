@@ -60,14 +60,6 @@ void writeAll(int fd, const std::uint8_t *data, std::size_t len)
 	}
 }
 
-/*
- * Decode a little-endian 32-bit field.
- *
- * Done by hand rather than by casting the buffer to a struct: the format is
- * little-endian by specification, and a cast would silently produce the wrong
- * number on a big-endian host - the one place where such a bug would never show
- * up in testing here.
- */
 std::uint32_t le32(const std::uint8_t *p)
 {
 	return static_cast<std::uint32_t>(p[0]) |

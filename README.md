@@ -1,13 +1,15 @@
-# KVault — a kernel-backed encrypted secrets vault with role-based access control
+# Encrypted Vault and Access Control Simulator
 
-KVault stores application secrets encrypted, keeps the master key in kernel
+*A kernel-backed encrypted secrets vault with role-based access control.*
+
+Encrypted Vault stores application secrets encrypted, keeps the master key in kernel
 memory only, decides every access in the kernel from the caller's real Linux
 UID, and records every attempt — allowed or denied — in an append-only audit
 log.
 
 The usual alternative is a config file or an environment variable. Both are
 readable by any process running as the same user, and neither leaves a trace of
-who read what. KVault moves the decision across the syscall boundary, where
+who read what. Encrypted Vault moves the decision across the syscall boundary, where
 user space cannot reach it.
 
 ## Layout
@@ -87,15 +89,8 @@ Full design, UML and the state machines are in [docs/](docs/):
 | [03-design.md](docs/03-design.md) | Architecture, threat model, crypto, ABI, trade-offs |
 | [04-uml.md](docs/04-uml.md) | Class, sequence and state diagrams |
 | [05-progress.md](docs/05-progress.md) | Development log and review notes |
-| [06-test-report.md](docs/06-test-report.md) | 90 test cases, benchmarks, defects found |
-| [screenshots/](docs/screenshots/) | The seven-step demo, with the raw transcripts beside it |
-
-**[EXPLANATION.md](EXPLANATION.md)** is the single document that covers all of
-it: how every part works, what each diagram and screenshot shows, the full
-command reference, the demo script, and interview questions with answers
-([print-ready PDF](docs/KVault-explanation.pdf), 43 pages).
-**[BRIEF.md](BRIEF.md)** is the two-page summary of the same material
-([print-ready PDF](docs/KVault-panel-brief.pdf)).
+| [06-test-report.md](docs/06-test-report.md) | 98 checks, benchmarks, defects found |
+| [screenshots/](docs/screenshots/) | The seven-step demo |
 
 ## Demo
 

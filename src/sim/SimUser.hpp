@@ -32,15 +32,6 @@ struct StepResult {
 	int         err;
 };
 
-/*
- * Base class for a simulated principal.
- *
- * Each SimUser runs in its own forked child that has dropped to the user's
- * real UID with setresuid(), so the kernel sees a genuinely different subject.
- * The role-specific subclasses differ only in which scripted steps they are
- * given and how they interpret the outcome, which is why the shared machinery
- * lives here and run() is the only virtual behaviour.
- */
 class SimUser {
 public:
 	SimUser(std::string name, uid_t uid, std::uint32_t role);
@@ -58,13 +49,6 @@ public:
 	virtual std::vector<StepResult> run();
 
 protected:
-	/*
-	 * @client may be null: a principal who is not in the kvault group cannot
-	 * open the control device at all, and that refusal is a legitimate
-	 * outcome to record rather than an error to crash on. The step is then
-	 * denied with the errno from open(), except for ReadAudit, which opens
-	 * the audit minor itself.
-	 */
 	StepResult execute(VaultClient *client, const Step &step, int openErr);
 
 	std::string       name_;

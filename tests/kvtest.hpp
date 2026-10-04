@@ -2,18 +2,7 @@
 #ifndef KV_TEST_HPP
 #define KV_TEST_HPP
 
-/*
- * A deliberately tiny test harness.
- *
- * No external framework: the project's constraint is C and C++ only, and
- * pulling in a dependency to compare two integers would be a poor trade. What
- * is needed is a way to run named cases, report the first failure in each with
- * a file and line, and exit non-zero if any failed.
- *
- * KV_CHECK records a failure and keeps going; KV_REQUIRE abandons the case,
- * because a case whose precondition failed will otherwise report a cascade of
- * consequences that hide the actual cause.
- */
+/* A deliberately tiny test harness. */
 #include <exception>
 #include <functional>
 #include <iostream>
@@ -76,10 +65,6 @@ public:
 					  << softFailures_ << " checks)\n";
 				++failed;
 			} else if (skipped_) {
-				/* Reported as skipped, never as a pass: a case
-				 * that did not run has proved nothing, and
-				 * counting it as green is how a suite comes to
-				 * be trusted for coverage it does not have. */
 				std::cout << "  SKIP  " << c.name << "\n";
 				++skipped;
 			} else {

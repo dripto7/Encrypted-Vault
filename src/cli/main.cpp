@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * vaultctl - command-line front end to /dev/kvault.
- *
- * The tool is deliberately thin: it parses arguments, derives keys and prints
- * results. Every authorisation decision happens in the kernel, so running
- * vaultctl as a different user is a real change of subject, not a flag.
- *
- * Milestone v0.1: status and the audit watcher. The remaining verbs are
- * wired to the client but the driver answers ENOSYS until the v0.4/v0.5
- * driver milestones land.
- */
+/* vaultctl - command-line front end to /dev/kvault. */
 #include <iostream>
 #include <string>
 #include <vector>
@@ -75,20 +65,6 @@ int cmdStatus()
 	return 0;
 }
 
-/*
- * Unseal, optionally against a vault file.
- *
- * The salt has to come from the same place the vault did, and that is the file
- * header - not the kernel. A freshly loaded module knows no salt, so deriving
- * from a newly generated one produces a key that cannot authenticate anything
- * in an existing file. (That is exactly the bug this grew out of: unseal
- * succeeded, import then failed with EACCES, and the vault looked corrupt when
- * it was fine.)
- *
- * So: a vault file decides the KDF parameters when one exists, the kernel's
- * recorded parameters decide when the vault is already unsealed-and-populated
- * in memory, and only a genuinely fresh vault generates a new salt.
- */
 int cmdUnseal(const std::string &vaultPath)
 {
 	VaultClient c;

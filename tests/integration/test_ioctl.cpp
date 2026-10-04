@@ -2,13 +2,6 @@
 /*
  * Integration tests: every ioctl against a loaded module, including the inputs
  * a well-behaved caller would never send.
- *
- * Needs kvault.ko loaded, the vault unsealed, and enough privilege to open
- * /dev/kvault. Cases that need more than the environment provides skip rather
- * than fail.
- *
- * Secrets created here are named kvtest_* and removed at the end, so the suite
- * can run against a vault that has real contents without disturbing them.
  */
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -350,13 +343,6 @@ KV_TEST(import_rejects_a_single_flipped_bit)
 	tidy(c, "kvtest_tamper");
 }
 
-/*
- * Random input, to find the crash a hand-written case would not.
- *
- * The point is not that every call fails - many should - but that the kernel
- * answers every one of them with an errno instead of dying, and that the errno
- * is always one the ABI documents.
- */
 KV_TEST(fuzz_names_and_lengths)
 {
 	if (!unsealed()) {

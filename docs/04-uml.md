@@ -67,7 +67,7 @@ the bug recorded in §5 of the test report.
 ![Denied GET](uml/05-seq-denied-get.png)
 
 The most important diagram in the set, because it shows the three things that
-distinguish KVault from a config file:
+distinguish Encrypted Vault from a config file:
 
 1. The decision is taken from `current_uid()`, which eve cannot influence.
 2. Nothing is decrypted and nothing is copied back — not even a zeroed buffer.

@@ -31,16 +31,6 @@ KV_TEST(securebuffer_wipe_clears_every_byte)
 		KV_CHECK_EQ(b.data()[i], 0u);
 }
 
-/*
- * The wipe must survive optimisation.
- *
- * This cannot be asserted from inside the process - the whole problem is that a
- * compiler may remove a store it can prove nobody reads, and any check that
- * reads it stops it being provably dead. What the test can do is confirm the
- * wipe happens at all at -O2 through a pointer the optimiser cannot follow to a
- * known destination; the volatile qualifier in SecureBuffer::wipe is what makes
- * it mandatory, and docs/06-test-report.md records the disassembly check.
- */
 KV_TEST(securebuffer_wipe_is_not_elided_at_O2)
 {
 	SecureBuffer<32> b;

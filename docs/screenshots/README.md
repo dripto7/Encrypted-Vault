@@ -15,16 +15,11 @@ Seven steps of the five-minute demo, captured from a real run against
 
 ## How these were made
 
-The commands were run for real and their output captured to
-`transcripts/*.log`. Those transcripts are the evidence; the PNGs are the
-same text rendered in a terminal-styled page so the important lines — an
-allow, a denial, a state change — are findable at a glance in a report or
-on a slide.
-
-They are therefore **renderings of a real session, not photographs of a
-screen**. The raw logs sit beside them so anything in an image can be
-checked against the text it came from, and the whole run can be reproduced
-by following the commands shown.
+The commands were run for real against a loaded module and their output
+captured, then rendered in a terminal-styled page so the important lines — an
+allow, a denial, a state change — are findable at a glance in a report or on a
+slide. They are **renderings of a real session, not photographs of a screen**,
+and the whole run reproduces by following the commands shown in them.
 
 Colour is applied per token rather than per line: a results row contains
 both `allow` and `deny`, so colouring whole lines would paint every denial

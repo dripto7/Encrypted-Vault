@@ -12,19 +12,7 @@
 
 namespace kvault {
 
-/*
- * Follows the audit stream on a background thread.
- *
- * The driver's reader blocks in a wait queue, which is what makes the stream
- * live rather than polled - but a blocking read cannot be interrupted by
- * setting a flag, because nothing wakes it. So the thread waits in poll() with
- * a timeout instead: the timeout is not a polling interval, it is only how long
- * stop() may take to be noticed.
- *
- * Records are accumulated under a mutex and handed over by take(). The callback
- * form is for live display; the accumulator is for a test that wants to assert
- * on what was logged after the fact.
- */
+/* Follows the audit stream on a background thread. */
 class AuditViewer {
 public:
 	using Callback = std::function<void(const kv_audit_rec &)>;

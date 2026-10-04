@@ -1,25 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * kv_file.c - serialise the vault to a sealed blob and back.
- *
- * The blob is what user space writes to disk. It contains ciphertext, nonces,
- * tags, ACLs and the KDF parameters: everything needed to reconstruct the vault
- * given the right passphrase, and nothing that helps without it.
- *
- * Two rules govern this file:
- *
- * 1. Every multi-byte field is written little-endian with the cpu_to_le*
- *    helpers, even though the development machine is already little-endian.
- *    A format whose byte order is "whatever the writer happened to use" is not
- *    a format, and the bug only ever shows up on someone else's hardware.
- *
- * 2. Everything parsed in kv_import() is untrusted. The blob may have been
- *    edited by anyone who could reach the file, so every length is bounds-
- *    checked against what remains of the buffer before it is used, and the
- *    arithmetic is done in a way that cannot wrap.
- *
- * Callers must hold kv_vault.lock.
- */
+/* kv_file.c - serialise the vault to a sealed blob and back. */
 #define pr_fmt(fmt) "kvault: " fmt
 
 #include <linux/module.h>
@@ -115,15 +95,6 @@ int kv_export(u8 *buf, u32 cap, u32 *out_len)
 	return 0;
 }
 
-/*
- * Verify one entry's ciphertext without keeping the plaintext.
- *
- * This is the whole tamper story: GCM's tag covers the ciphertext and the
- * associated data, which here is the secret's name, so a single flipped bit
- * anywhere in either makes crypto_aead_decrypt return -EBADMSG. Import checks
- * every entry before it commits any of them, so a damaged file does not get
- * half-loaded.
- */
 static int kv_verify_entry(const char *name, const u8 *nonce, const u8 *ct,
 			   u32 ct_len, const u8 *tag)
 {
@@ -164,12 +135,6 @@ int kv_import(const u8 *buf, u32 len)
 
 	entry_count = le32_to_cpu(hdr.entry_count);
 
-	/*
-	 * Two passes. The first validates and authenticates everything against
-	 * the untrusted buffer; only if that succeeds does the second pass
-	 * mutate the store. An import that fails leaves the running vault
-	 * exactly as it was.
-	 */
 	for (pass = 0; pass < 2; pass++) {
 		u32 off = sizeof(hdr);
 		u32 n;

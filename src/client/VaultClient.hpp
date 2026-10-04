@@ -12,10 +12,10 @@
 
 namespace kvault {
 
-/* Thrown for anything the kernel rejected. @code carries the errno so callers
+/*
  * can distinguish EACCES (the reference monitor said no) from EINVAL (the
  * caller got the request wrong) — the simulator needs that distinction to
- * report "denied" rather than "broken". */
+ */
 class VaultError : public std::system_error {
 public:
 	VaultError(int err, const std::string &what)
@@ -23,11 +23,6 @@ public:
 	int errnoValue() const noexcept { return code().value(); }
 };
 
-/*
- * RAII wrapper over /dev/kvault. The file descriptor is owned by the object
- * and closed in the destructor, including when an ioctl throws, so no path
- * through the CLI or the simulator can leak a descriptor to the vault.
- */
 class VaultClient {
 public:
 	enum class Device { Control, Audit };

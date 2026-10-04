@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * kv_store.c - the in-kernel secret table.
- *
- * Secrets live in a fixed hash table keyed by name. The table is sized at
- * compile time (KV_HASH_BITS) because the expected population is small and a
- * resizable structure would add locking complexity for no benefit.
- *
- * All functions here expect kv_vault.lock to be held by the caller.
- */
+/* kv_store.c - the in-kernel secret table. */
 #define pr_fmt(fmt) "kvault: " fmt
 
 #include <linux/module.h>

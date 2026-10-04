@@ -63,11 +63,6 @@ StepResult SimUser::execute(VaultClient *client, const Step &step, int openErr)
 			client->rotate(step.name);
 			break;
 		case Step::Op::ReadAudit: {
-			/* Opened per step: the auditor's access to the log is a
-			 * separate grant from any access to the vault. A
-			 * blocking read would hang if nothing had been logged,
-			 * so poll with a short timeout and treat "the device
-			 * opened" as the thing being tested. */
 			VaultClient audit(VaultClient::Device::Audit);
 			struct pollfd pfd{audit.fd(), POLLIN, 0};
 			const int n = ::poll(&pfd, 1, 500);

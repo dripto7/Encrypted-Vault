@@ -1,13 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/*
- * kvault_ioctl.h - shared ABI between the kvault kernel module and user space.
- *
- * This header is included by both the driver (kernel C) and the user-space
- * tools (C++17), so it must stay free of anything specific to either side.
- * Every field uses a fixed-width type and the structures are explicitly
- * padded, because the on-disk vault format and the ioctl ABI must not change
- * meaning between compilers or ABIs.
- */
 #ifndef _KVAULT_IOCTL_H
 #define _KVAULT_IOCTL_H
 
@@ -15,10 +6,6 @@
 #include <linux/types.h>
 #include <linux/ioctl.h>
 #else
-/* linux/types.h gives user space the same __uXX spelling the kernel uses, so
- * the struct definitions below are literally the same text on both sides of
- * the syscall boundary. Defining the typedefs by hand instead would clash
- * with any other header that pulls in linux/types.h. */
 #include <linux/types.h>
 #include <stdint.h>
 #include <sys/ioctl.h>
@@ -96,16 +83,6 @@
 
 /* --- ioctl payloads ---------------------------------------------------- */
 
-/*
- * UNSEAL: user space derives the key with PBKDF2 and hands it over once.
- *
- * The KDF parameters travel with the key because the kernel is the one thing
- * that outlives any single vaultctl invocation: on the first unseal of an
- * empty vault it records @salt and @kdf_iterations, and STATUS hands them back
- * so a later unseal derives the same key from the same passphrase. The salt is
- * not secret - its job is to make one precomputed table useless against many
- * vaults, not to stay hidden.
- */
 struct kv_unseal_arg {
 	__u8  key[KV_KEY_LEN];
 	__u8  salt[KV_SALT_LEN];
@@ -163,32 +140,13 @@ struct kv_status_arg {
 	__u64 last_activity_ms;
 	__u32 caller_uid;
 	__u32 caller_role;
-	/* Whether the gcm(aes) implementation the kernel selected is
-	 * hardware-accelerated, and which one it is. The name matters: a CPU
-	 * with both AES-NI and VAES gets "generic-gcm-vaes-avx2" rather than
-	 * any of the aesni drivers, so a check for the string "aesni" reports
-	 * a false negative on exactly the fastest hardware. */
 	__u32 accelerated;
 	char  crypto_driver[KV_DRIVER_NAME_MAX];
-	/* @initialized is 0 before the first ever unseal, when the vault has no
-	 * key-check value to compare against. User space needs to know the
-	 * difference: an empty vault accepts the passphrase it is given and
-	 * adopts it, an initialized one checks. */
 	__u32 initialized;
 	__u32 kdf_iterations;
 	__u8  salt[KV_SALT_LEN];
 };
 
-/* EXPORT / IMPORT move the sealed blob across the boundary. The kernel never
- * touches the filesystem itself: user space owns persistence, and what it
- * gets handed is ciphertext, nonces and tags only.
- *
- * A sealed vault can reach a megabyte, which does not fit in an ioctl command
- * number (_IOC_SIZEBITS is 14 bits, so the largest struct an _IOW/_IOR code
- * can describe is 16383 bytes). The argument is therefore a small descriptor
- * carrying a user-space pointer, and the driver copies the blob through that
- * pointer in a second step. __u64 rather than a real pointer keeps the struct
- * the same size for 32- and 64-bit callers. */
 #define KV_BLOB_MAX         (1u << 20)   /* 1 MiB of sealed vault */
 
 struct kv_blob_arg {

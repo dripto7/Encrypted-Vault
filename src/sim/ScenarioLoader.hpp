@@ -10,25 +10,7 @@
 
 namespace kvault::sim {
 
-/*
- * Parses a simulation scenario.
- *
- * The scenario describes three things, and keeping them in one file matters:
- * what the vault starts with, who may reach what, and what each principal then
- * attempts. Separating the setup from the expectations would make it possible
- * for them to drift apart, and a scenario whose setup no longer matches its
- * expectations silently stops testing anything.
- *
- * Format, one directive per line:
- *
- *   secret <name> <value>                   seeded by the admin before the run
- *   grant  <name> <subject> <perms>         subject is a role or user:<name>
- *   step   <user> <op> <secret> <expect> [value]
- *
- * <op> is get, put, list, delete, rotate or audit; <expect> is allow or deny.
- * '-' stands in for an operand an operation does not take (list and audit name
- * no secret). Blank lines and # comments are ignored.
- */
+/* Parses a simulation scenario. */
 class ScenarioLoader {
 public:
 	struct Secret {

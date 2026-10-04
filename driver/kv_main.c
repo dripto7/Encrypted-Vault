@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * kv_main.c - character device, per-open sessions and ioctl dispatch.
- *
- * Two minors are registered under one cdev:
- *   minor 0 (/dev/kvault)       - the control/command interface (ioctl)
- *   minor 1 (/dev/kvault_audit) - a read-only audit stream (read + poll)
- *
- * Every entry point captures the caller's identity from the kernel's own
- * credentials rather than from anything user space passes in, which is the
- * whole point of putting the policy check down here.
- */
+/* kv_main.c - character device, per-open sessions and ioctl dispatch. */
 #define pr_fmt(fmt) "kvault: " fmt
 
 #include <linux/module.h>
@@ -132,12 +122,6 @@ static __poll_t kv_poll(struct file *filp, struct poll_table_struct *wait)
 
 /* --- request validation ------------------------------------------------ */
 
-/*
- * A name arriving from user space is untrusted in three ways: it may not be
- * terminated, it may be empty, and it may contain characters that would make
- * audit output ambiguous. All three are rejected here, once, before any name
- * reaches the store or the log.
- */
 static int kv_check_name(char *name)
 {
 	size_t len;
@@ -325,20 +309,12 @@ static int kv_ioctl_put(struct kv_session *sess, void __user *uarg)
 			ret = -EACCES;
 			goto out_audit;
 		}
-		/* A bound on the namespace. Without it any principal allowed to
-		 * create could exhaust kernel memory one secret at a time, and
-		 * an allocation failure deep in the kernel is a worse outcome
-		 * than a clear refusal here. */
 		if (kv_vault.secret_count >= kv_max_secrets) {
 			ret = -ENOSPC;
 			goto out_audit;
 		}
 	}
 
-	/* A fresh nonce on every write. Reusing a nonce under the same key
-	 * breaks GCM outright - it leaks the XOR of the two plaintexts and the
-	 * authentication key - so this is generated, never derived from a
-	 * counter that a restore from backup could rewind. */
 	get_random_bytes(nonce, sizeof(nonce));
 
 	ct = kzalloc(arg->len, GFP_KERNEL);
@@ -493,14 +469,6 @@ out:
 	return ret;
 }
 
-/*
- * Re-encrypt a secret under a fresh nonce without changing its plaintext.
- *
- * This is what you do after a suspected exposure of the ciphertext, or on a
- * schedule, to limit how much material is encrypted under any one nonce. The
- * plaintext makes a round trip through a kernel buffer that is wiped before the
- * function returns, so a failure part-way leaves no decrypted copy behind.
- */
 static int kv_ioctl_rotate(struct kv_session *sess, void __user *uarg)
 {
 	struct kv_name_arg arg;
@@ -570,14 +538,6 @@ out:
 	return ret;
 }
 
-/*
- * LIST returns only the names the caller may read.
- *
- * Omitting the rest rather than reporting them as denied matters: a list that
- * said "7 secrets, you may read 1" would leak the shape of the namespace, and
- * secret names are informative on their own - "stripe_live_key" tells an
- * attacker what the system does and what is worth attacking.
- */
 static int kv_ioctl_list(struct kv_session *sess, void __user *uarg)
 {
 	struct kv_list_arg *arg;
@@ -666,11 +626,6 @@ out:
 	return ret;
 }
 
-/*
- * Bind a UID to a role. Administrative, and deliberately not something a
- * principal can do to itself: a developer who could set their own role would
- * make the whole policy advisory.
- */
 static int kv_ioctl_set_role(struct kv_session *sess, void __user *uarg)
 {
 	struct kv_setrole_arg arg;
@@ -693,21 +648,6 @@ static int kv_ioctl_set_role(struct kv_session *sess, void __user *uarg)
 	return ret;
 }
 
-/*
- * EXPORT / IMPORT.
- *
- * The argument is a descriptor carrying a user-space address rather than an
- * inline buffer, because an ioctl command number can only describe a struct of
- * up to 16383 bytes and a sealed vault is larger than that. So the blob makes
- * two trips: the descriptor through the ioctl argument, the payload through the
- * pointer it names. That pointer is untrusted - it is validated by
- * copy_to_user/copy_from_user, which is the only thing that may dereference it.
- *
- * Both are administrative. Export in particular hands out every ciphertext in
- * the vault, which is exactly what an attacker needs to mount an offline attack
- * on the passphrase at their leisure, so it is not something a reader should be
- * able to do just because they can read one secret.
- */
 static int kv_ioctl_export(struct kv_session *sess, void __user *uarg)
 {
 	struct kv_blob_arg arg;

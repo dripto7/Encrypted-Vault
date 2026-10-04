@@ -1,9 +1,7 @@
 # 6. Test report
 
 All results below were produced against `kvault.ko` loaded on
-**Linux 7.1.5+kali-amd64, x86-64**, with four real system users. The raw
-output is in `verification-session.log`, `v05-session.log` and
-`integration-session.log` beside this file.
+**Linux 7.1.5+kali-amd64, x86-64**, with four real system users.
 
 ## 6.1 Summary
 
@@ -22,8 +20,7 @@ output is in `verification-session.log`, `v05-session.log` and
 Kernel health after every run: no `WARNING`, `BUG`, lockdep or KASAN output;
 `rmmod` clean each time.
 
-Seven steps of the demo are captured in `screenshots/`, with the raw
-transcripts in `screenshots/transcripts/`.
+Seven steps of the demo are captured in `screenshots/`.
 
 ## 6.2 How the suites are split
 
@@ -43,10 +40,10 @@ than no suite, and §6.6 records the run where exactly that happened.
 
 | Req | Evidence |
 |---|---|
-| FR-1 seal/unseal | `v05-session.log` §unseal; `system/lifecycle`; wrong passphrase rejected on import |
+| FR-1 seal/unseal | `system/lifecycle`; wrong passphrase rejected on import; lockout after three failures |
 | FR-2 CRUD | `integration/ioctl`: round trip at 1 byte and 4096 bytes, embedded NULs, overwrite, rotate, delete, list |
 | FR-3 kernel-enforced RBAC | `kvsim` 16/16; alice allowed and bob allowed for *different reasons* under the same role |
-| FR-4 grant/revoke | `v05-session.log`: identical request denied → granted → allowed → revoked → denied |
+| FR-4 grant/revoke | Identical request denied → granted → allowed → revoked → denied (`docs/screenshots/03-rbac.png`) |
 | FR-5 audit | 14 records for the `kvsim` run, 7 of them denials; `AuditViewer` woken by the kernel |
 | FR-6 auto-lock | `system/lifecycle`: vault reaches `AUTO_LOCKED` with no user-space process involved |
 | FR-7 lockout | `v04` session: `1/3 → 2/3 → LOCKED_OUT`, correct passphrase then refused |

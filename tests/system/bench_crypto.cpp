@@ -1,21 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * Throughput of the full GET path, and which crypto implementation produced it.
- *
- * This measures the round trip through the syscall boundary, the reference
- * monitor and AES-GCM - not the cipher in isolation. That is deliberate: the
- * question a user of KVault has is "what does a secret read cost", and the
- * answer includes the ioctl and the policy check, both of which are fixed costs
- * that matter more than the cipher at small sizes.
- *
- * To measure the software path for comparison, remove the accelerated driver so
- * the kernel falls back, then reload the module so it re-allocates its tfm:
- *
- *     sudo rmmod kvault && sudo modprobe -r aesni_intel && sudo insmod driver/kvault.ko
- *
- * aesni_intel may be in use by dm-crypt or others, in which case rmmod refuses
- * and the comparison is not available on that machine.
- */
+/* Throughput of the full GET path, and which crypto implementation produced it. */
 #include <unistd.h>
 
 #include <chrono>

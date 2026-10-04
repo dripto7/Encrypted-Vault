@@ -1,16 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * kv_audit.c - append-only audit ring buffer with a blocking reader.
- *
- * Every decision the reference monitor makes is recorded here, allowed or
- * denied. The buffer is a fixed power-of-two ring: when it wraps, the oldest
- * records are lost rather than new ones being dropped, so a flood of denials
- * cannot hide the denial that follows it.
- *
- * Readers open /dev/kvault_audit and read fixed-size struct kv_audit_rec.
- * A reader that has caught up blocks on kv_audit_wq until a writer wakes it,
- * which is what makes `vaultctl watch` a live stream rather than a poll loop.
- */
+/* kv_audit.c - append-only audit ring buffer with a blocking reader. */
 #define pr_fmt(fmt) "kvault: " fmt
 
 #include <linux/module.h>

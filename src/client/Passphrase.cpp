@@ -51,10 +51,6 @@ private:
 
 std::string Passphrase::read(const std::string &prompt)
 {
-	/* Echo only needs suppressing on a terminal. When stdin is a pipe or a
-	 * file there is nothing to display and nothing to restore, so the guard
-	 * is skipped rather than the read being refused - that is what lets the
-	 * test suites drive unseal non-interactively. */
 	std::unique_ptr<EchoOff> guard;
 	const bool interactive = ::isatty(STDIN_FILENO) == 1;
 

@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * kv_crypto.c - AES-256-GCM through the kernel crypto API.
- *
- * The module never implements a cipher itself: it allocates "gcm(aes)" and
- * lets the kernel pick the best implementation available, which on a CPU with
- * the aes flag means the AES-NI driver.
- *
- * GCM rather than CBC because an encrypt-then-MAC construction is needed for
- * tamper detection; with GCM the authentication tag comes from the same pass
- * and a flipped byte in the vault file fails the tag check on import.
- */
+/* kv_crypto.c - AES-256-GCM through the kernel crypto API. */
 #define pr_fmt(fmt) "kvault: " fmt
 
 #include <linux/module.h>
@@ -71,18 +61,6 @@ const char *kv_crypto_driver_name(void)
 	return crypto_tfm_alg_driver_name(crypto_aead_tfm(kv_aead));
 }
 
-/*
- * Whether that implementation uses the CPU's AES instructions.
- *
- * Checking for the substring "aesni" is the obvious test and it is wrong: the
- * kernel registers several accelerated gcm(aes) drivers and picks by priority,
- * so a machine with both AES-NI and the wider VAES instructions gets
- * "generic-gcm-vaes-avx2" (priority 600) ahead of "generic-gcm-aesni-avx"
- * (500). The fastest hardware would be reported as having no acceleration.
- *
- * The prefixes below name the accelerated families; anything else is the
- * portable C implementation.
- */
 bool kv_crypto_accelerated(void)
 {
 	static const char * const accel[] = { "aesni", "vaes", "aes-ce",
@@ -113,25 +91,6 @@ int kv_crypto_kcv(const u8 *key, u8 *kcv_out)
 	return ret;
 }
 
-/*
- * One GCM operation.
- *
- * The kernel AEAD interface works on scatterlists and expects a single
- * contiguous layout of [ associated data | payload | tag ], with the tag
- * trailing the ciphertext. Rather than scatter-gather across the caller's
- * separate buffers, this builds that layout once in a scratch allocation and
- * copies the pieces out afterwards: the buffers involved are at most 4 KiB, so
- * the copy is cheaper than getting the sg bookkeeping subtly wrong, and the
- * scratch can be wiped in one place on every exit path.
- *
- * @aad is the secret's name. Authenticating it binds each ciphertext to the
- * entry it belongs to, so an attacker who can edit the vault file cannot move
- * one secret's ciphertext under another secret's name: the tag check fails
- * because the name is part of what was authenticated.
- *
- * Callers must hold kv_vault.lock. The tfm is shared and setkey writes to it,
- * so two concurrent operations would race on the key.
- */
 static int kv_gcm(const u8 *key, const u8 *nonce,
 		  const u8 *aad, u32 aad_len,
 		  const u8 *in, u32 in_len,
@@ -215,10 +174,6 @@ int kv_crypto_decrypt(const u8 *key, const u8 *nonce,
 		      false);
 }
 
-/* Constant-time comparison of a presented key against the stored key-check
- * value. memcmp would return as soon as it found a differing byte, which leaks
- * how many leading bytes were right - enough, over many attempts, to recover
- * the value a byte at a time. crypto_memneq always reads both buffers whole. */
 bool kv_crypto_kcv_matches(const u8 *key, const u8 *stored_kcv)
 {
 	u8 kcv[KV_KCV_LEN];

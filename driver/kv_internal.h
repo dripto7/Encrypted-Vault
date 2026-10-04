@@ -1,10 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/*
- * kv_internal.h - definitions private to the kvault module.
- *
- * Nothing here crosses the syscall boundary; the user-space ABI lives in
- * include/kvault_ioctl.h.
- */
 #ifndef _KV_INTERNAL_H
 #define _KV_INTERNAL_H
 

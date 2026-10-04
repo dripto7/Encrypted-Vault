@@ -26,9 +26,9 @@ Encrypting the file does not fix either one. The application still has to
 decrypt it, so the key has to be somewhere the application can reach — which
 means the problem has been moved, not solved.
 
-## 1.2 What KVault does
+## 1.2 What Encrypted Vault does
 
-KVault moves three things into the kernel:
+Encrypted Vault moves three things into the kernel:
 
 1. **The key.** The master key is derived from a passphrase in user space,
    handed to the kernel once, and wiped from user space immediately. It lives
@@ -76,7 +76,7 @@ The kernel version differs in what an attacker has to achieve:
 
 What this does *not* defend against is root. A sufficiently privileged user can
 load a module, patch kernel memory or read the key out of the running kernel.
-KVault's threat model is therefore explicit about it: the adversary is an
+the vault's threat model is therefore explicit about it: the adversary is an
 unprivileged or differently-privileged local process, not the machine's
 administrator. Section 2 of the design document states this in full.
 
@@ -94,7 +94,7 @@ In scope:
 
 Out of scope, and deliberately so:
 
-- New cryptography. KVault uses AES-256-GCM from the kernel crypto API and
+- New cryptography. Encrypted Vault uses AES-256-GCM from the kernel crypto API and
   PBKDF2 from OpenSSL. The contribution is the system design.
 - Defence against a malicious administrator, offline attacks on a weak
   passphrase, or side channels beyond the constant-time comparisons noted in

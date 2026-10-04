@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * kv_proc.c - /proc/kvault/{status,stats}
- *
- * These files exist so the vault's lifecycle can be inspected without opening
- * the device. They are world-readable, which constrains what they may contain:
- * lifecycle state and counters, never secret names, plaintext or key material.
- */
+/* kv_proc.c - /proc/kvault/{status,stats} */
 #define pr_fmt(fmt) "kvault: " fmt
 
 #include <linux/module.h>
@@ -13,7 +7,6 @@
 #include <linux/seq_file.h>
 
 #include "kv_internal.h"
-
 
 static struct proc_dir_entry *kv_proc_dir;
 
