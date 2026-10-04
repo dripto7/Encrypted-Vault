@@ -87,6 +87,9 @@ static int kv_open(struct inode *inode, struct file *filp)
 	if (!sess)
 		return -ENOMEM;
 
+	/* Recorded for diagnostics only. Every authorisation decision reads
+	 * current_uid() when the operation runs, because this descriptor can
+	 * outlive these credentials. */
 	sess->uid       = current_uid();
 	sess->pid       = current->pid;
 	sess->opened_ms = kv_now_ms();
@@ -160,13 +163,15 @@ static void kv_expire_lockout(void)
 
 static int kv_ioctl_unseal(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_unseal_arg *arg;
 	int ret;
 
 	/* Unsealing is administrative: it is the operation that makes every
 	 * other operation possible. */
-	if (!kv_is_admin(sess->uid)) {
-		kv_audit_log(sess->uid, sess->pid, KV_OP_UNSEAL, "",
+	if (!kv_is_admin(uid)) {
+		kv_audit_log(uid, pid, KV_OP_UNSEAL, "",
 			     KV_RESULT_DENY, -EACCES);
 		return -EACCES;
 	}
@@ -210,19 +215,19 @@ static int kv_ioctl_unseal(struct kv_session *sess, void __user *uarg)
 		memcpy(kv_vault.salt, arg->salt, KV_SALT_LEN);
 		kv_vault.kdf_iterations = arg->kdf_iterations;
 		pr_info("vault initialized by uid %u\n",
-			from_kuid(&init_user_ns, sess->uid));
+			from_kuid(&init_user_ns, uid));
 	} else if (!kv_crypto_kcv_matches(arg->key, kv_vault.kcv)) {
 		kv_vault.failed_attempts++;
 		if (kv_vault.failed_attempts >= kv_max_attempts) {
 			kv_vault.state = KV_STATE_LOCKED_OUT;
 			kv_vault.lockout_until_ms =
 				kv_now_ms() + (u64)kv_lockout_secs * 1000;
-			kv_audit_log(sess->uid, sess->pid, KV_OP_LOCKOUT, "",
+			kv_audit_log(uid, pid, KV_OP_LOCKOUT, "",
 				     KV_RESULT_DENY, -EAGAIN);
 			pr_warn("locked out after %u failed unseal attempts\n",
 				kv_vault.failed_attempts);
 		}
-		kv_audit_log(sess->uid, sess->pid, KV_OP_UNSEAL, "",
+		kv_audit_log(uid, pid, KV_OP_UNSEAL, "",
 			     KV_RESULT_DENY, -EACCES);
 		ret = -EACCES;
 		goto unlock;
@@ -233,7 +238,7 @@ static int kv_ioctl_unseal(struct kv_session *sess, void __user *uarg)
 	kv_vault.state = KV_STATE_UNSEALED;
 	kv_vault.failed_attempts = 0;
 	kv_touch_locked();
-	kv_audit_log(sess->uid, sess->pid, KV_OP_UNSEAL, "",
+	kv_audit_log(uid, pid, KV_OP_UNSEAL, "",
 		     KV_RESULT_ALLOW, 0);
 	ret = 0;
 
@@ -248,15 +253,17 @@ out:
 
 static int kv_ioctl_seal(struct kv_session *sess)
 {
-	if (!kv_is_admin(sess->uid)) {
-		kv_audit_log(sess->uid, sess->pid, KV_OP_SEAL, "",
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
+	if (!kv_is_admin(uid)) {
+		kv_audit_log(uid, pid, KV_OP_SEAL, "",
 			     KV_RESULT_DENY, -EACCES);
 		return -EACCES;
 	}
 
 	mutex_lock(&kv_vault.lock);
 	kv_do_seal(KV_STATE_SEALED);
-	kv_audit_log(sess->uid, sess->pid, KV_OP_SEAL, "", KV_RESULT_ALLOW, 0);
+	kv_audit_log(uid, pid, KV_OP_SEAL, "", KV_RESULT_ALLOW, 0);
 	mutex_unlock(&kv_vault.lock);
 	return 0;
 }
@@ -265,6 +272,8 @@ static int kv_ioctl_seal(struct kv_session *sess)
 
 static int kv_ioctl_put(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_secret_arg *arg;
 	struct kv_secret *s;
 	u8 *ct = NULL;
@@ -298,14 +307,14 @@ static int kv_ioctl_put(struct kv_session *sess, void __user *uarg)
 
 	s = kv_store_find(arg->name);
 	if (s) {
-		if (!kv_acl_check(s, sess->uid, KV_PERM_WRITE)) {
+		if (!kv_acl_check(s, uid, KV_PERM_WRITE)) {
 			ret = -EACCES;
 			goto out_audit;
 		}
 	} else {
 		/* Creating a name is its own authorisation question: there is no
 		 * object yet whose ACL could answer it. See kv_role_may_create. */
-		if (!kv_role_may_create(kv_role_of(sess->uid))) {
+		if (!kv_role_may_create(kv_role_of(uid))) {
 			ret = -EACCES;
 			goto out_audit;
 		}
@@ -330,7 +339,7 @@ static int kv_ioctl_put(struct kv_session *sess, void __user *uarg)
 		goto out_audit;
 
 	if (!s) {
-		s = kv_store_insert(arg->name, sess->uid);
+		s = kv_store_insert(arg->name, uid);
 		if (!s) {
 			ret = -ENOMEM;
 			goto out_audit;
@@ -354,7 +363,7 @@ static int kv_ioctl_put(struct kv_session *sess, void __user *uarg)
 	ret = 0;
 
 out_audit:
-	kv_audit_log(sess->uid, sess->pid, KV_OP_PUT, arg->name,
+	kv_audit_log(uid, pid, KV_OP_PUT, arg->name,
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	mutex_unlock(&kv_vault.lock);
 	kfree_sensitive(ct);
@@ -366,6 +375,8 @@ out_free:
 
 static int kv_ioctl_get(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_secret_arg *arg;
 	struct kv_secret *s;
 	int ret;
@@ -396,7 +407,7 @@ static int kv_ioctl_get(struct kv_session *sess, void __user *uarg)
 
 	/* The reference monitor. Everything above this point is parsing;
 	 * everything below it has been authorised. */
-	if (!kv_acl_check(s, sess->uid, KV_PERM_READ)) {
+	if (!kv_acl_check(s, uid, KV_PERM_READ)) {
 		ret = -EACCES;
 		goto out_audit;
 	}
@@ -415,7 +426,7 @@ static int kv_ioctl_get(struct kv_session *sess, void __user *uarg)
 	kv_touch_locked();
 
 out_audit:
-	kv_audit_log(sess->uid, sess->pid, KV_OP_GET, arg->name,
+	kv_audit_log(uid, pid, KV_OP_GET, arg->name,
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	mutex_unlock(&kv_vault.lock);
 
@@ -432,6 +443,8 @@ out_free:
 
 static int kv_ioctl_delete(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_name_arg arg;
 	struct kv_secret *s;
 	int ret;
@@ -453,7 +466,7 @@ static int kv_ioctl_delete(struct kv_session *sess, void __user *uarg)
 		ret = -ENOENT;
 		goto out;
 	}
-	if (!kv_acl_check(s, sess->uid, KV_PERM_DELETE)) {
+	if (!kv_acl_check(s, uid, KV_PERM_DELETE)) {
 		ret = -EACCES;
 		goto out;
 	}
@@ -463,7 +476,7 @@ static int kv_ioctl_delete(struct kv_session *sess, void __user *uarg)
 	ret = 0;
 
 out:
-	kv_audit_log(sess->uid, sess->pid, KV_OP_DELETE, arg.name,
+	kv_audit_log(uid, pid, KV_OP_DELETE, arg.name,
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	mutex_unlock(&kv_vault.lock);
 	return ret;
@@ -471,6 +484,8 @@ out:
 
 static int kv_ioctl_rotate(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_name_arg arg;
 	struct kv_secret *s;
 	u8 *pt = NULL, *ct = NULL;
@@ -495,7 +510,7 @@ static int kv_ioctl_rotate(struct kv_session *sess, void __user *uarg)
 		ret = -ENOENT;
 		goto out;
 	}
-	if (!kv_acl_check(s, sess->uid, KV_PERM_WRITE)) {
+	if (!kv_acl_check(s, uid, KV_PERM_WRITE)) {
 		ret = -EACCES;
 		goto out;
 	}
@@ -530,7 +545,7 @@ static int kv_ioctl_rotate(struct kv_session *sess, void __user *uarg)
 	kv_touch_locked();
 
 out:
-	kv_audit_log(sess->uid, sess->pid, KV_OP_ROTATE, arg.name,
+	kv_audit_log(uid, pid, KV_OP_ROTATE, arg.name,
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	mutex_unlock(&kv_vault.lock);
 	kfree_sensitive(pt);
@@ -540,6 +555,8 @@ out:
 
 static int kv_ioctl_list(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_list_arg *arg;
 	struct kv_secret *s;
 	int i, ret = 0;
@@ -558,7 +575,7 @@ static int kv_ioctl_list(struct kv_session *sess, void __user *uarg)
 		hlist_for_each_entry(s, &kv_vault.secrets[i], node) {
 			if (arg->count >= KV_LIST_MAX)
 				break;
-			if (!kv_acl_check(s, sess->uid, KV_PERM_READ))
+			if (!kv_acl_check(s, uid, KV_PERM_READ))
 				continue;
 			strscpy(arg->names[arg->count], s->name, KV_NAME_MAX);
 			arg->count++;
@@ -567,7 +584,7 @@ static int kv_ioctl_list(struct kv_session *sess, void __user *uarg)
 	kv_touch_locked();
 
 out:
-	kv_audit_log(sess->uid, sess->pid, KV_OP_LIST, "",
+	kv_audit_log(uid, pid, KV_OP_LIST, "",
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	mutex_unlock(&kv_vault.lock);
 
@@ -581,6 +598,8 @@ out:
 static int kv_ioctl_grant(struct kv_session *sess, void __user *uarg,
 			  bool granting)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_grant_arg arg;
 	struct kv_secret *s;
 	int ret;
@@ -605,7 +624,7 @@ static int kv_ioctl_grant(struct kv_session *sess, void __user *uarg,
 	/* Delegation is itself a permission: holding GRANT on a secret is what
 	 * lets a principal widen access to it, and the owner and admin hold it
 	 * implicitly. Without this, any reader could share what they can read. */
-	if (!kv_acl_check(s, sess->uid, KV_PERM_GRANT)) {
+	if (!kv_acl_check(s, uid, KV_PERM_GRANT)) {
 		ret = -EACCES;
 		goto out;
 	}
@@ -619,7 +638,7 @@ static int kv_ioctl_grant(struct kv_session *sess, void __user *uarg,
 	}
 
 out:
-	kv_audit_log(sess->uid, sess->pid,
+	kv_audit_log(uid, pid,
 		     granting ? KV_OP_GRANT : KV_OP_REVOKE, arg.name,
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	mutex_unlock(&kv_vault.lock);
@@ -628,21 +647,23 @@ out:
 
 static int kv_ioctl_set_role(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_setrole_arg arg;
 	int ret;
 
 	if (copy_from_user(&arg, uarg, sizeof(arg)))
 		return -EFAULT;
 
-	if (!kv_is_admin(sess->uid)) {
-		kv_audit_log(sess->uid, sess->pid, KV_OP_SET_ROLE, "",
+	if (!kv_is_admin(uid)) {
+		kv_audit_log(uid, pid, KV_OP_SET_ROLE, "",
 			     KV_RESULT_DENY, -EACCES);
 		return -EACCES;
 	}
 
 	mutex_lock(&kv_vault.lock);
 	ret = kv_role_bind(arg.uid, arg.role_id);
-	kv_audit_log(sess->uid, sess->pid, KV_OP_SET_ROLE, "",
+	kv_audit_log(uid, pid, KV_OP_SET_ROLE, "",
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	mutex_unlock(&kv_vault.lock);
 	return ret;
@@ -650,6 +671,8 @@ static int kv_ioctl_set_role(struct kv_session *sess, void __user *uarg)
 
 static int kv_ioctl_export(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_blob_arg arg;
 	u8 *blob = NULL;
 	u32 len = 0;
@@ -658,8 +681,8 @@ static int kv_ioctl_export(struct kv_session *sess, void __user *uarg)
 	if (copy_from_user(&arg, uarg, sizeof(arg)))
 		return -EFAULT;
 
-	if (!kv_is_admin(sess->uid)) {
-		kv_audit_log(sess->uid, sess->pid, KV_OP_EXPORT, "",
+	if (!kv_is_admin(uid)) {
+		kv_audit_log(uid, pid, KV_OP_EXPORT, "",
 			     KV_RESULT_DENY, -EACCES);
 		return -EACCES;
 	}
@@ -681,7 +704,7 @@ static int kv_ioctl_export(struct kv_session *sess, void __user *uarg)
 	ret = kv_export(blob, arg.len, &len);
 
 out:
-	kv_audit_log(sess->uid, sess->pid, KV_OP_EXPORT, "",
+	kv_audit_log(uid, pid, KV_OP_EXPORT, "",
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	mutex_unlock(&kv_vault.lock);
 
@@ -706,6 +729,8 @@ out:
 
 static int kv_ioctl_import(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
+	const pid_t pid = current->pid;
 	struct kv_blob_arg arg;
 	u8 *blob;
 	int ret;
@@ -713,8 +738,8 @@ static int kv_ioctl_import(struct kv_session *sess, void __user *uarg)
 	if (copy_from_user(&arg, uarg, sizeof(arg)))
 		return -EFAULT;
 
-	if (!kv_is_admin(sess->uid)) {
-		kv_audit_log(sess->uid, sess->pid, KV_OP_IMPORT, "",
+	if (!kv_is_admin(uid)) {
+		kv_audit_log(uid, pid, KV_OP_IMPORT, "",
 			     KV_RESULT_DENY, -EACCES);
 		return -EACCES;
 	}
@@ -736,7 +761,7 @@ static int kv_ioctl_import(struct kv_session *sess, void __user *uarg)
 		ret = -EPERM;
 	else
 		ret = kv_import(blob, arg.len);
-	kv_audit_log(sess->uid, sess->pid, KV_OP_IMPORT, "",
+	kv_audit_log(uid, pid, KV_OP_IMPORT, "",
 		     ret ? KV_RESULT_DENY : KV_RESULT_ALLOW, ret);
 	if (!ret)
 		kv_touch_locked();
@@ -750,6 +775,7 @@ static int kv_ioctl_import(struct kv_session *sess, void __user *uarg)
  * counters only, never names, plaintext or key material. */
 static int kv_ioctl_status(struct kv_session *sess, void __user *uarg)
 {
+	const kuid_t uid = current_uid();
 	struct kv_status_arg st;
 
 	memset(&st, 0, sizeof(st));
@@ -763,8 +789,8 @@ static int kv_ioctl_status(struct kv_session *sess, void __user *uarg)
 	st.auto_lock_secs   = kv_autolock_secs;
 	st.lockout_until_ms = kv_vault.lockout_until_ms;
 	st.last_activity_ms = kv_vault.last_activity_ms;
-	st.caller_uid       = from_kuid(&init_user_ns, sess->uid);
-	st.caller_role      = kv_role_of(sess->uid);
+	st.caller_uid       = from_kuid(&init_user_ns, uid);
+	st.caller_role      = kv_role_of(uid);
 	st.initialized      = kv_vault.kcv_present ? 1 : 0;
 	st.kdf_iterations   = kv_vault.kdf_iterations;
 	memcpy(st.salt, kv_vault.salt, KV_SALT_LEN);

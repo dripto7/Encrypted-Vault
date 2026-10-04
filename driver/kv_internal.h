@@ -39,6 +39,13 @@ struct kv_secret {
 
 /* Per-open state. Kept in file->private_data so each fd carries the identity
  * of whoever opened it, captured at open() time. */
+/*
+ * Per-open state. @uid and @pid record who opened the handle and are used for
+ * diagnostics only - never for an access decision. A descriptor outlives the
+ * credentials it was opened with: the opener can drop privileges and keep it,
+ * or pass it to another process over a unix socket. Authorisation therefore
+ * reads current_uid() at the moment of each operation.
+ */
 struct kv_session {
 	kuid_t uid;
 	pid_t  pid;

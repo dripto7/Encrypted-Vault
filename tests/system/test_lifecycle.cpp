@@ -3,6 +3,10 @@
  * System tests: concurrency under the vault mutex, the auto-lock timer, and
  * what survives a module reload.
  */
+#include <fcntl.h>
+#include <grp.h>
+#include <pwd.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -150,6 +154,75 @@ KV_TEST(concurrent_writers_do_not_corrupt_the_store)
 		th.join();
 
 	KV_CHECK_EQ(errors.load(), 0);
+}
+
+/*
+ * A descriptor must not carry the privileges it was opened with.
+ *
+ * The opener can drop to another user and keep the descriptor, or hand it to an
+ * unprivileged process over a unix socket with SCM_RIGHTS. If authorisation
+ * used the UID captured at open(), the receiver would inherit the opener's
+ * access - precisely the bypass this asserts cannot happen.
+ */
+KV_TEST(a_descriptor_does_not_carry_the_openers_privileges)
+{
+	if (!ready()) {
+		kvtest::Registry::instance().skip("vault not unsealed");
+		return;
+	}
+
+	const struct passwd *pw = ::getpwnam("kv_eve");
+	if (!pw) {
+		kvtest::Registry::instance().skip(
+		    "kv_eve missing; run build/bin/kvsetup");
+		return;
+	}
+
+	{
+		VaultClient c;
+		c.put("kvtest_privdrop", {'n', 'o', 't', 'y', 'o', 'u', 'r', 's'});
+	}
+
+	const pid_t pid = ::fork();
+	KV_REQUIRE(pid >= 0);
+
+	if (pid == 0) {
+		/* Open while still root, then become a principal with no access
+		 * at all, keeping the descriptor. */
+		const int fd = ::open("/dev/kvault", O_RDWR | O_CLOEXEC);
+		if (fd < 0)
+			::_exit(10);
+		if (::initgroups("kv_eve", pw->pw_gid) ||
+		    ::setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
+		    ::setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
+			::_exit(11);
+		if (::setresuid(0, 0, 0) == 0)
+			::_exit(12);          /* the drop was reversible */
+
+		kv_secret_arg arg{};
+		std::strncpy(arg.name, "kvtest_privdrop", KV_NAME_MAX - 1);
+		arg.len = KV_SECRET_MAX;
+		const int rc = ::ioctl(fd, KVAULT_GET, &arg);
+		/* 0 means the stale UID was honoured, which is the bug. */
+		::_exit(rc == 0 ? 1 : (errno == EACCES ? 0 : 13));
+	}
+
+	int status = 0;
+	::waitpid(pid, &status, 0);
+	KV_REQUIRE(WIFEXITED(status));
+	const int rc = WEXITSTATUS(status);
+
+	if (rc == 1)
+		kvtest::Registry::instance().noteFailure(
+		    "a dropped process read a secret through a descriptor "
+		    "opened as root");
+	else if (rc >= 10)
+		kvtest::Registry::instance().noteFailure(
+		    "child setup failed with code " + std::to_string(rc));
+	KV_CHECK_EQ(rc, 0);
+
+	VaultClient c;
+	try { c.remove("kvtest_privdrop"); } catch (const VaultError &) {}
 }
 
 KV_TEST(the_vault_locks_itself_when_idle)

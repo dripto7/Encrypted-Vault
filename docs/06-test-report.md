@@ -12,10 +12,10 @@ All results below were produced against `kvault.ko` loaded on
 | `unit/scenario` | 8 | 8 passed, 0 skipped, 0 failed |
 | `unit/sealedstore` | 11 | 11 passed, 0 skipped, 0 failed |
 | `integration/ioctl` | 19 | 19 passed, 0 skipped, 0 failed |
-| `system/lifecycle` | 4 | 4 passed, 0 skipped, 0 failed |
+| `system/lifecycle` | 5 | 5 passed, 0 skipped, 0 failed |
 | `kvsim` multi-user scenario | 16 steps | 16/16 as policy specifies |
 | RBAC + persistence session | 26 checks | 26 passed |
-| **Total** | **98** | **98 passed, 0 failed** |
+| **Total** | **99** | **99 passed, 0 failed** |
 
 Kernel health after every run: no `WARNING`, `BUG`, lockdep or KASAN output;
 `rmmod` clean each time.
@@ -135,6 +135,7 @@ by reading the code.
 | 3 | `kvsim`'s privilege drop changed only the UID, so children kept root's supplementary groups | Reasoning about why group permissions would be meaningless, while writing the group setup | `initgroups` → `setresgid` → `setresuid`, in that order |
 | 4 | `SimUser::run()` opened its client before any step, so an auditor who cannot open the control device crashed the forked child | First run with carol in `kvaudit` only | Opening is part of what the step tests; refusal is recorded |
 | 5 | **A guest could create a secret.** `PUT` checked `WRITE` on an existing secret; nothing authorised creating a new name | `kvsim` — the step expected a denial and got an allow | `kv_role_may_create()`; plus a `max_secrets` bound |
+| 7 | **A descriptor kept the privileges it was opened with.** Authorisation used the UID captured at `open()`, so a process could open the device as root, drop to an unprivileged user, and still read any secret | A proof of concept written while preparing for questions about `open()` | Authorise against `current_uid()` at operation time; the session UID is now diagnostics only |
 | 6 | A skipped test case printed `ok` | Reading a run in which the auto-lock case reported green without executing | Harness reports `SKIP` and counts it; system suite restructured so nothing skips |
 
 Defect 5 is the one that matters. A guest with no permissions at all could
