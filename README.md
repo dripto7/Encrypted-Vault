@@ -90,6 +90,10 @@ Full design, UML and the state machines are in [docs/](docs/):
 | [06-test-report.md](docs/06-test-report.md) | 90 test cases, benchmarks, defects found |
 | [screenshots/](docs/screenshots/) | The seven-step demo, with the raw transcripts beside it |
 
+**[EXPLANATION.md](EXPLANATION.md)** is the single document that covers all of
+it: how every part works, what each diagram and screenshot shows, the full
+command reference, the demo script, and interview questions with answers.
+
 ## Demo
 
 ![Multi-user simulation](docs/screenshots/04-kvsim.png)
